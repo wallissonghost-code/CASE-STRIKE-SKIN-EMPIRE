@@ -45,7 +45,7 @@ end
 -- decoração temática: usa a coleção mais alta cuja vitrine o jogador desbloqueou
 local function themeColor(profile)
 	local best = nil
-	for _, c in ipairs(CaseDefinitions.List) do
+	for _, c in ipairs(CaseDefinitions.Collections) do
 		if profile.cosmetics and profile.cosmetics["showcase_" .. c.id] then
 			best = c
 		end

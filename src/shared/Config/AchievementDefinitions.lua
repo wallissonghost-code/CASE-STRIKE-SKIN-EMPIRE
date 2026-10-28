@@ -6,7 +6,7 @@ local AchievementDefinitions = {}
 
 AchievementDefinitions.List = {
 	{ id = "a_open1", name = "Primeiro Giro", description = "Abra sua primeira caixa", stat = "casesOpened", target = 1, reward = { credits = 50 } },
-	{ id = "a_open100", name = "Mão Quente", description = "Abra 100 caixas", stat = "casesOpened", target = 100, reward = { credits = 600, materials = { scrap = 10 } } },
+	{ id = "a_open100", name = "Mão Quente", description = "Abra 100 caixas", stat = "casesOpened", target = 100, reward = { credits = 600, materials = { scrap = 10 }, potions = { luck = 2 } } },
 	{ id = "a_open1000", name = "Roleta Incansável", description = "Abra 1.000 caixas", stat = "casesOpened", target = 1000, reward = { credits = 8000, materials = { core = 2 } } },
 	{ id = "a_unique10", name = "Catalogador", description = "Descubra 10 skins diferentes", stat = "uniqueDiscovered", target = 10, reward = { credits = 300 } },
 	{ id = "a_unique30", name = "Arquivista", description = "Descubra 30 skins diferentes", stat = "uniqueDiscovered", target = 30, reward = { credits = 2500, materials = { pigment = 5 } } },

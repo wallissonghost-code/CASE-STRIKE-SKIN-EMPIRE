@@ -6,6 +6,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage.Shared
 local Format = require(Shared.Util.Format)
 local CaseDefinitions = require(Shared.Config.CaseDefinitions)
+local CaseCatalog = require(Shared.Config.CaseCatalog)
 local SkinDefinitions = require(Shared.Config.SkinDefinitions)
 local RarityConfig = require(Shared.Config.RarityConfig)
 local Probability = require(Shared.Logic.Probability)
@@ -17,13 +18,17 @@ local Store = require(script.Parent.Parent.Util.Store)
 
 local Shop = {}
 
-local function rarestSkins(caseId, n)
+local function rarestSkins(caseDef, n)
 	local list = {}
-	for _, s in ipairs(SkinDefinitions.ByCase[caseId]) do
-		table.insert(list, s)
+	for _, d in ipairs(caseDef.drops) do
+		table.insert(list, SkinDefinitions.ById[d.skinId])
 	end
 	table.sort(list, function(a, b)
-		return RarityConfig.tier(a.rarity) > RarityConfig.tier(b.rarity)
+		local ta, tb = RarityConfig.tier(a.rarity), RarityConfig.tier(b.rarity)
+		if ta ~= tb then
+			return ta > tb
+		end
+		return a.value > b.value
 	end)
 	local out = {}
 	for i = 1, math.min(n, #list) do
@@ -33,39 +38,58 @@ local function rarestSkins(caseId, n)
 end
 
 ---------------------------------------------------------------------------
--- grade da loja
+-- grade da loja, em seções: Caixas de Nível, Caixas Especiais e Estoque Limitado
 ---------------------------------------------------------------------------
 
 local function buildShop()
 	local p = UI.createPanel("🛒 Loja de Caixas", 1000, 620, "CaseShop")
 	local cards = {}
-	local grid = UI.scroll({ Size = UDim2.fromScale(1, 1), Parent = p.content })
-	UI.make("UIGridLayout", { CellSize = UDim2.fromOffset(300, 250), CellPadding = UDim2.fromOffset(14, 14), SortOrder = Enum.SortOrder.LayoutOrder, Parent = grid })
-	for _, c in ipairs(CaseDefinitions.List) do
-		local card = UI.make("TextButton", {
-			Text = "",
-			AutoButtonColor = true,
-			BackgroundColor3 = UI.Theme.panel2:Lerp(UI.rgb(c.color), 0.25),
-			LayoutOrder = c.order,
-			Parent = grid,
+	local scroll = UI.scroll({ Size = UDim2.fromScale(1, 1), Parent = p.content })
+	UI.list(scroll, 10)
+	local order = 0
+	for _, section in ipairs(CaseCatalog.Sections) do
+		order = order + 1
+		UI.text({
+			Text = "~ " .. section.name .. " ~",
+			Font = UI.Fonts.title,
+			TextSize = 22,
+			TextXAlignment = Enum.TextXAlignment.Center,
+			Size = UDim2.new(1, -8, 0, 30),
+			LayoutOrder = order,
+			Parent = scroll,
 		})
-		UI.corner(card, 14)
-		UI.stroke(card, UI.rgb(c.trim), 2, 0.35)
-		local vp = UI.caseViewport(c, UDim2.new(1, 0, 0, 120), { spin = true, zoom = 1.25 })
-		vp.Parent = card
-		UI.text({ Text = c.name, Font = UI.Fonts.title, TextSize = 22, Size = UDim2.new(1, -20, 0, 26), Position = UDim2.fromOffset(12, 118), Parent = card })
-		UI.text({ Text = c.collectionName .. " • " .. c.theme, TextSize = 13, TextColor3 = UI.Theme.muted, Size = UDim2.new(1, -20, 0, 18), Position = UDim2.fromOffset(12, 144), Parent = card })
-		local preview = {}
-		for _, s in ipairs(rarestSkins(c.id, 3)) do
-			table.insert(preview, '<font color="#' .. UI.rarityColor(s.rarity):ToHex() .. '">' .. s.finish .. "</font>")
+		order = order + 1
+		local grid = UI.frame({ BackgroundTransparency = 1, AutomaticSize = Enum.AutomaticSize.Y, Size = UDim2.new(1, -8, 0, 0), LayoutOrder = order, Parent = scroll })
+		UI.make("UIGridLayout", { CellSize = UDim2.fromOffset(226, 232), CellPadding = UDim2.fromOffset(12, 12), SortOrder = Enum.SortOrder.LayoutOrder, Parent = grid })
+		for _, c in ipairs(CaseDefinitions.List) do
+			if c.section == section.id then
+				local card = UI.make("TextButton", {
+					Text = "",
+					AutoButtonColor = true,
+					BackgroundColor3 = UI.Theme.panel2:Lerp(UI.rgb(c.color), 0.25),
+					LayoutOrder = c.order,
+					Parent = grid,
+				})
+				UI.corner(card, 14)
+				UI.stroke(card, UI.rgb(c.trim), 2, 0.35)
+				local vp = UI.caseViewport(c, UDim2.new(1, 0, 0, 104), { spin = true, zoom = 1.25 })
+				vp.Parent = card
+				local stockTag = UI.text({ Text = "", Font = UI.Fonts.bold, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left, Size = UDim2.new(1, -16, 0, 16), Position = UDim2.fromOffset(8, 6), Parent = card })
+				UI.text({ Text = c.name, Font = UI.Fonts.title, TextSize = 19, Size = UDim2.new(1, -16, 0, 24), Position = UDim2.fromOffset(10, 104), Parent = card })
+				UI.text({ Text = c.isCollection and (c.collectionName .. " • " .. c.theme) or c.theme, TextSize = 11, TextColor3 = UI.Theme.muted, Size = UDim2.new(1, -16, 0, 30), Position = UDim2.fromOffset(10, 128), Parent = card })
+				local preview = {}
+				for _, sk in ipairs(rarestSkins(c, 2)) do
+					table.insert(preview, '<font color="#' .. UI.rarityColor(sk.rarity):ToHex() .. '">' .. sk.finish .. "</font>")
+				end
+				UI.text({ Text = "Destaques: " .. table.concat(preview, " • "), TextSize = 11, Size = UDim2.new(1, -16, 0, 28), Position = UDim2.fromOffset(10, 158), Parent = card })
+				local price = UI.text({ Text = "₵ " .. Format.short(c.price), Font = UI.Fonts.title, TextSize = 19, TextColor3 = UI.Theme.accent, Size = UDim2.new(0.5, 0, 0, 26), Position = UDim2.fromOffset(10, 196), Parent = card })
+				local status = UI.text({ Text = "", Font = UI.Fonts.bold, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Right, Size = UDim2.new(0.5, -16, 0, 26), Position = UDim2.new(0.5, 0, 0, 196), Parent = card })
+				card.Activated:Connect(function()
+					UI.open("CaseWindow", { caseId = c.id })
+				end)
+				cards[c.id] = { price = price, status = status, stock = stockTag }
+			end
 		end
-		UI.text({ Text = "Destaques: " .. table.concat(preview, " • "), TextSize = 12, Size = UDim2.new(1, -20, 0, 30), Position = UDim2.fromOffset(12, 164), Parent = card })
-		local price = UI.text({ Text = "₵ " .. Format.int(c.price), Font = UI.Fonts.title, TextSize = 22, TextColor3 = UI.Theme.accent, Size = UDim2.new(0.5, 0, 0, 28), Position = UDim2.fromOffset(12, 210), Parent = card })
-		local status = UI.text({ Text = "", Font = UI.Fonts.bold, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Right, Size = UDim2.new(0.5, -20, 0, 28), Position = UDim2.new(0.5, 0, 0, 210), Parent = card })
-		card.Activated:Connect(function()
-			UI.open("CaseWindow", { caseId = c.id })
-		end)
-		cards[c.id] = { price = price, status = status }
 	end
 	return {
 		frame = p.frame,
@@ -73,11 +97,19 @@ local function buildShop()
 			for _, c in ipairs(CaseDefinitions.List) do
 				local ref = cards[c.id]
 				local free = view.freeCases[c.id] or 0
+				local left = view.stock[c.id]
+				if left then
+					ref.stock.Text = "Estoque: " .. left .. "x hoje"
+					ref.stock.TextColor3 = left > 0 and UI.Theme.good or UI.Theme.bad
+				end
 				if not c.available then
 					ref.status.Text = "Indisponível"
 					ref.status.TextColor3 = UI.Theme.bad
 				elseif view.level < c.requiredLevel then
 					ref.status.Text = "🔒 Nível " .. c.requiredLevel
+					ref.status.TextColor3 = UI.Theme.bad
+				elseif left and left <= 0 then
+					ref.status.Text = "Esgotada"
 					ref.status.TextColor3 = UI.Theme.bad
 				elseif free > 0 then
 					ref.status.Text = "🎁 " .. free .. " grátis"
@@ -179,9 +211,14 @@ local function buildCaseWindow()
 		luckLabel.Text = view.luck.total > 0 and ("🍀 Sorte ativa: +" .. Format.percent(view.luck.total, 0) .. " (ver painel Sorte)") or ""
 		local locked = view.level < c.requiredLevel
 		local affordable = state.useFree or view.credits >= totalCost()
-		openBtn.Text = locked and ("🔒 Nível " .. c.requiredLevel) or (CaseController.autoActive and "AUTOMÁTICO ATIVO" or ("ABRIR ×" .. state.quantity))
-		UI.setEnabled(openBtn, (not locked) and affordable and c.available and not CaseController.autoActive, UI.Theme.accent)
-		UI.setEnabled(autoBtn, (not locked) and affordable and c.available, UI.Theme.blue)
+		local left = view.stock[c.id]
+		local stockOk = left == nil or left >= state.quantity
+		if left then
+			luckLabel.Text = luckLabel.Text .. "   📦 Estoque hoje: " .. left .. "x (renova em " .. Format.duration(view.stockResetsIn - (Store.serverNow() - view.serverTime)) .. ")"
+		end
+		openBtn.Text = locked and ("🔒 Nível " .. c.requiredLevel) or ((not stockOk) and "ESTOQUE ESGOTADO" or (CaseController.autoActive and "AUTOMÁTICO ATIVO" or ("ABRIR ×" .. state.quantity)))
+		UI.setEnabled(openBtn, (not locked) and affordable and stockOk and c.available and not CaseController.autoActive, UI.Theme.accent)
+		UI.setEnabled(autoBtn, (not locked) and affordable and stockOk and c.available and not c.stockPerDay, UI.Theme.blue)
 		autoBtn.Text = CaseController.autoActive and "⏹ Parar automático" or "🔁 Abertura automática"
 	end
 
@@ -323,7 +360,7 @@ local function buildCaseWindow()
 				state.fast = Store.view.settings.fastOpen == true
 			end
 			p.title.Text = "📦 " .. c.name
-			themeLabel.Text = c.collectionName .. " • " .. c.theme .. (c.available and "" or " • INDISPONÍVEL")
+			themeLabel.Text = (c.isCollection and (c.collectionName .. " • ") or "") .. c.theme .. (c.available and "" or " • INDISPONÍVEL") .. (c.stockPerDay and (" • estoque de " .. c.stockPerDay .. "/dia") or "")
 			priceLabel.Text = "₵ " .. Format.int(c.price) .. " por caixa"
 			fetchOdds()
 		end,

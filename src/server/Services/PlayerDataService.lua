@@ -43,9 +43,12 @@ local function now()
 	return DateTime.now().UnixTimestamp
 end
 
-function PlayerDataService.newContext()
+-- ctx de uma operação: horário do servidor, RNG do servidor e a zona em que o SERVIDOR
+-- detectou o personagem (ZoneService) — nunca informada pelo cliente.
+function PlayerDataService.newContext(player)
 	return {
 		now = now(),
+		zoneId = player and player:GetAttribute("ZoneId") or nil,
 		rng = function()
 			return rng:NextNumber()
 		end,
@@ -228,7 +231,7 @@ function PlayerDataService.run(player, fn, opts)
 		return Remotes.fail("not_loaded", "Seus dados ainda estão carregando.")
 	end
 	local backup = deepCopy(session.profile)
-	local ctx = PlayerDataService.newContext()
+	local ctx = PlayerDataService.newContext(player)
 	local success, ok, data = pcall(fn, session.profile, ctx)
 	if not success then
 		session.profile = backup -- restaura tudo: falha parcial não altera nada
@@ -264,7 +267,7 @@ function PlayerDataService.push(player)
 		if sessions[player] ~= session or not session.valid or not player.Parent then
 			return
 		end
-		local view = ClientView.build(session.profile, now(), player.DisplayName)
+		local view = ClientView.build(session.profile, now(), player.DisplayName, player:GetAttribute("ZoneId"))
 		Remotes.event("DataUpdated"):FireClient(player, view)
 	end)
 end
@@ -274,7 +277,7 @@ function PlayerDataService.snapshot(player)
 	if not session or not session.valid then
 		return nil
 	end
-	return ClientView.build(session.profile, now(), player.DisplayName)
+	return ClientView.build(session.profile, now(), player.DisplayName, player:GetAttribute("ZoneId"))
 end
 
 ---------------------------------------------------------------------------

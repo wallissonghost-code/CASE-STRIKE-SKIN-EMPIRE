@@ -57,14 +57,14 @@ MissionDefinitions.Daily = {
 		event = "obtain",
 		filter = { minTier = 3 },
 		target = 1,
-		reward = { xp = 60, materials = { scrap = 6, pigment = 1 } },
+		reward = { xp = 60, materials = { scrap = 6, pigment = 1 }, potions = { luck = 1 } },
 	},
 	{
 		id = "d_levelup1",
 		description = "Suba 1 nível de colecionador",
 		event = "levelUp",
 		target = 1,
-		reward = { credits = 150, materials = { scrap = 4 } },
+		reward = { credits = 150, materials = { scrap = 4 }, potions = { xp = 1 } },
 	},
 	{
 		id = "d_equip1",
@@ -102,7 +102,7 @@ MissionDefinitions.Weekly = {
 		description = "Resgate créditos do banco 20 vezes",
 		event = "bankClaim",
 		target = 20,
-		reward = { credits = 1200, xp = 300 },
+		reward = { credits = 1200, xp = 300, potions = { income = 2 } },
 	},
 	{
 		id = "w_featured3",

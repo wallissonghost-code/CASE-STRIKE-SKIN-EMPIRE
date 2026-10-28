@@ -97,6 +97,60 @@ function EventDefinitions.nextEvent(now)
 	return best
 end
 
+-- Eventos relâmpago "2X": agenda fixa e real (UTC), a cada 3 horas por 20 minutos,
+-- alternando o tipo. Calculados pelo horário do servidor; a interface mostra o tempo real.
+EventDefinitions.Flash = {
+	period = 3 * 3600,
+	duration = 20 * 60,
+	types = {
+		{ id = "flash_luck", name = "2X Evento de Trevo", kind = "luck", multiplier = 2, icon = "🍀" },
+		{ id = "flash_xp", name = "2X XP Relâmpago", kind = "xp", multiplier = 2, icon = "⚡" },
+		{ id = "flash_income", name = "2X Renda do Banco", kind = "income", multiplier = 2, icon = "💰" },
+	},
+}
+
+local function flashSlot(index)
+	local F = EventDefinitions.Flash
+	local t = F.types[(index % #F.types) + 1]
+	local startsAt = index * F.period
+	return { id = t.id, name = t.name, kind = t.kind, multiplier = t.multiplier, icon = t.icon, startsAt = startsAt, endsAt = startsAt + F.duration }
+end
+
+-- evento relâmpago ativo agora (ou nil)
+function EventDefinitions.flashAt(now)
+	local index = math.floor(now / EventDefinitions.Flash.period)
+	local slot = flashSlot(index)
+	if now >= slot.startsAt and now < slot.endsAt then
+		return slot
+	end
+	return nil
+end
+
+-- próximo evento relâmpago que ainda vai começar
+function EventDefinitions.nextFlash(now)
+	local index = math.floor(now / EventDefinitions.Flash.period)
+	local slot = flashSlot(index)
+	if slot.startsAt > now then
+		return slot
+	end
+	return flashSlot(index + 1)
+end
+
+-- janelas de um tipo de relâmpago que se sobrepõem a [from, to] (usado pela renda do banco)
+function EventDefinitions.flashWindows(from, to, kind)
+	local out = {}
+	local F = EventDefinitions.Flash
+	local first = math.floor(from / F.period)
+	local last = math.floor(to / F.period)
+	for i = first, last do
+		local slot = flashSlot(i)
+		if slot.kind == kind and slot.endsAt > from and slot.startsAt < to then
+			table.insert(out, slot)
+		end
+	end
+	return out
+end
+
 EventDefinitions.ChallengeById = {}
 for _, ev in ipairs(EventDefinitions.Events) do
 	for _, c in ipairs(ev.challenges) do

@@ -9,11 +9,15 @@ local EventDefinitions = require(Shared.Config.EventDefinitions)
 local AchievementDefinitions = require(Shared.Config.AchievementDefinitions)
 local EconomyConfig = require(Shared.Config.EconomyConfig)
 local AttributeConfig = require(Shared.Config.AttributeConfig)
+local ZoneConfig = require(Shared.Config.ZoneConfig)
+local PotionConfig = require(Shared.Config.PotionConfig)
+local CaseDefinitions = require(Shared.Config.CaseDefinitions)
 local BankMath = require(Shared.Logic.BankMath)
 local Wealth = require(Shared.Logic.Wealth)
 local Progression = require(Shared.Logic.Progression)
 local ProfileOps = require(Shared.Logic.ProfileOps)
 local ProfileSchema = require(Shared.Logic.ProfileSchema)
+local TimeUtil = require(Shared.Util.TimeUtil)
 
 local ClientView = {}
 
@@ -25,7 +29,7 @@ local function copyMap(t)
 	return out
 end
 
-function ClientView.build(profile, now, playerName)
+function ClientView.build(profile, now, playerName, zoneId)
 	ProfileOps.refreshPeriods(profile, now)
 	BankMath.settle(profile, now)
 
@@ -110,7 +114,44 @@ function ClientView.build(profile, now, playerName)
 	end
 	local nextEv = EventDefinitions.nextEvent(now)
 
-	local luckTotal, luckList = ProfileOps.activeLuck(profile, now)
+	local luckTotal, luckList = ProfileOps.activeLuck(profile, now, zoneId)
+
+	local zones = {}
+	for _, z in ipairs(ZoneConfig.Zones) do
+		table.insert(zones, {
+			id = z.id,
+			name = z.name,
+			cost = z.cost,
+			luck = z.luck,
+			requiredLevel = z.requiredLevel,
+			requires = z.requires,
+			owned = profile.zones[z.id] == true,
+		})
+	end
+
+	local potions = {}
+	for _, id in ipairs(PotionConfig.Order) do
+		local def = PotionConfig.Potions[id]
+		table.insert(potions, {
+			id = id,
+			displayName = def.displayName,
+			icon = def.icon,
+			description = def.description,
+			count = profile.potions[id] or 0,
+			endsAt = profile.activePotions[id] or 0,
+			duration = def.duration,
+			maxStack = def.maxStack,
+		})
+	end
+
+	local stock = {}
+	for _, c in ipairs(CaseDefinitions.List) do
+		if c.stockPerDay then
+			stock[c.id] = ProfileOps.stockLeft(profile, c, now)
+		end
+	end
+	local flash = EventDefinitions.flashAt(now)
+	local nextFlash = EventDefinitions.nextFlash(now)
 
 	local achievements = {}
 	for _, a in ipairs(AchievementDefinitions.List) do
@@ -152,13 +193,21 @@ function ClientView.build(profile, now, playerName)
 		maxQuantity = AttributeConfig.maxQuantity(profile.attributes.multiOpen),
 		speedFactor = AttributeConfig.speedFactor(profile.attributes.openSpeed),
 		cosmetics = copyMap(profile.cosmetics),
+		zone = zoneId or "zone1",
+		zones = zones,
+		potions = potions,
+		stock = stock,
+		stockResetsIn = TimeUtil.secondsUntilNextDay(now),
+		flash = flash,
+		nextFlash = nextFlash,
 		materials = copyMap(profile.materials),
 		freeCases = copyMap(profile.freeCases),
 		bank = {
 			slots = BankMath.slots(profile),
 			pending = profile.bank.pending,
 			storageCap = BankMath.storageCap(profile),
-			rate = BankMath.totalRate(profile),
+			rate = BankMath.totalRate(profile) * BankMath.currentBoost(profile, now),
+			boost = BankMath.currentBoost(profile, now),
 			efficiency = BankMath.efficiency(profile),
 			maxOfflineSeconds = BankMath.offlineCap(profile),
 			maxSlotsShown = BankConfig.MaxSlotsShown,

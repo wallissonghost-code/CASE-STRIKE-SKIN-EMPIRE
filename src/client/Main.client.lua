@@ -28,6 +28,7 @@ local order = {
 	"ProgressionPanels",
 	"LeaderboardController",
 	"LobbyController",
+	"ZoneController",
 }
 for _, name in ipairs(order) do
 	require(Controllers:WaitForChild(name)).init()

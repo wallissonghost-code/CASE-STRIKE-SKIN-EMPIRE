@@ -429,12 +429,53 @@ local function buildRebirth()
 	}
 end
 
+---------------------------------------------------------------------------
+-- Poções
+---------------------------------------------------------------------------
+
+local function buildPotions()
+	local p = UI.createPanel("🧪 Poções", 760, 480, "Potions")
+	local list = UI.scroll({ Size = UDim2.fromScale(1, 1), Parent = p.content })
+	UI.list(list, 8)
+	return {
+		frame = p.frame,
+		refresh = function(view)
+			UI.clear(list)
+			UI.text({ Text = "Poções são ganhas em presentes, missões, níveis e conquistas. Ativar acrescenta tempo ao efeito (até o limite).", TextSize = 13, TextColor3 = UI.Theme.muted, AutomaticSize = Enum.AutomaticSize.Y, Size = UDim2.new(1, -8, 0, 0), LayoutOrder = 0, Parent = list })
+			local now = Store.serverNow()
+			for i, pot in ipairs(view.potions) do
+				local f = UI.frame({ BackgroundColor3 = UI.Theme.panel2, Size = UDim2.new(1, -8, 0, 84), LayoutOrder = i, Parent = list })
+				UI.corner(f, 12)
+				UI.text({ Text = pot.icon, TextSize = 38, TextXAlignment = Enum.TextXAlignment.Center, Size = UDim2.fromOffset(64, 84), Parent = f })
+				UI.text({ Text = pot.displayName .. "  <font color='#A5AABE'>×" .. pot.count .. "</font>", Font = UI.Fonts.bold, TextSize = 16, Size = UDim2.new(1, -230, 0, 22), Position = UDim2.fromOffset(70, 8), Parent = f })
+				UI.text({ Text = pot.description .. " Dura " .. Format.duration(pot.duration) .. " por poção (máx. " .. Format.duration(pot.maxStack) .. ").", TextSize = 12, TextColor3 = UI.Theme.muted, Size = UDim2.new(1, -230, 0, 32), Position = UDim2.fromOffset(70, 30), Parent = f })
+				local active = pot.endsAt > now
+				UI.text({ Text = active and ("Ativa: " .. Format.duration(pot.endsAt - now)) or "Inativa", TextSize = 12, Font = UI.Fonts.bold, TextColor3 = active and UI.Theme.good or UI.Theme.muted, Size = UDim2.new(1, -230, 0, 16), Position = UDim2.fromOffset(70, 62), Parent = f })
+				local btn = UI.button({
+					Text = "Ativar " .. pot.displayName,
+					TextSize = 13,
+					color = UI.Theme.purple,
+					AnchorPoint = Vector2.new(1, 0.5),
+					Position = UDim2.new(1, -12, 0.5, 0),
+					Size = UDim2.fromOffset(150, 44),
+					Parent = f,
+					onClick = function()
+						UI.handle(Net.call("ProgressionAction", { action = "activatePotion", potionId = pot.id }), pot.displayName .. " ativada!")
+					end,
+				})
+				UI.setEnabled(btn, pot.count > 0 and (pot.endsAt - now) < pot.maxStack, UI.Theme.purple)
+			end
+		end,
+	}
+end
+
 function Panels.init()
 	UI.register("Missions", buildMissions)
 	UI.register("Gifts", buildGifts)
 	UI.register("Luck", buildLuck)
 	UI.register("Attributes", buildAttributes)
 	UI.register("Rebirth", buildRebirth)
+	UI.register("Potions", buildPotions)
 end
 
 return Panels

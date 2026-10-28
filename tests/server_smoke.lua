@@ -450,7 +450,7 @@ test("cliente inicia sem erros e recebe a fotografia", function()
 end)
 
 test("todos os painéis abrem e atualizam sem erros", function()
-	for _, name in ipairs({ "Shop", "Inventory", "Bank", "Upgrade", "Collections", "Missions", "Gifts", "Luck", "Attributes", "Rebirth", "Leaderboard", "Battle" }) do
+	for _, name in ipairs({ "Shop", "Inventory", "Bank", "Upgrade", "Collections", "Missions", "Gifts", "Luck", "Attributes", "Rebirth", "Leaderboard", "Battle", "Zones", "Potions" }) do
 		UI.open(name)
 		M.advance(0.3)
 		eq(UI.current, name)
@@ -722,7 +722,9 @@ test("V4: placa acima do personagem mostra nome, título, nível e patrimônio",
 	local character = M.instance("Model", "Alice")
 	local head = M.instance("Part", "Head")
 	head.Parent = character
-	M.instance("Part", "HumanoidRootPart").Parent = character
+	local hrp = M.instance("Part", "HumanoidRootPart")
+	hrp.Position = Vector3.new(0, 3, 9)
+	hrp.Parent = character
 	alice2.Character = character
 	alice2.CharacterAdded:Fire(character)
 	M.advance(0.5)
@@ -730,6 +732,73 @@ test("V4: placa acima do personagem mostra nome, título, nível e patrimônio",
 	truthy(plate, "placa criada")
 	eq(plate.PlayerName.Text, "Alice")
 	truthy(string.find(plate.Stats.Text, "Nv ", 1, true))
+end)
+
+test("zonas: servidor detecta a posição e só dá sorte com a zona desbloqueada", function()
+	local p = profile()
+	local hrp = alice2.Character.HumanoidRootPart
+	hrp.Position = Vector3.new(235, 3, 0) -- dentro da Zona 2
+	M.advance(1.5)
+	eq(alice2:GetAttribute("ZoneId"), "zone2")
+	local odds = invoke(S2, "RequestCaseOpen", alice2, { action = "odds", caseId = "starter" })
+	local luckLocked = odds.data.luck
+	p.credits = p.credits + 10000
+	local buy = invoke(S2, "ProgressionAction", alice2, { action = "buyZone", zoneId = "zone2" })
+	truthy(buy.ok, tostring(buy.message))
+	local odds2 = invoke(S2, "RequestCaseOpen", alice2, { action = "odds", caseId = "starter" })
+	truthy(odds2.data.luck > luckLocked, "sorte da zona aplicada")
+	hrp.Position = Vector3.new(0, 3, 9)
+	M.advance(1.5)
+	eq(alice2:GetAttribute("ZoneId"), "zone1")
+	local odds3 = invoke(S2, "RequestCaseOpen", alice2, { action = "odds", caseId = "starter" })
+	truthy(odds3.data.luck < odds2.data.luck, "fora da zona sem bônus")
+end)
+
+test("poções: ativar pela interface e efeito com tempo", function()
+	local p = profile()
+	p.potions.luck = 2
+	S2.pds.push(alice2)
+	M.advance(0.5)
+	UI.open("Potions")
+	M.advance(0.5)
+	click("Ativar " .. "Poção da Sorte")
+	eq(p.potions.luck, 1)
+	truthy(p.activePotions.luck > M.epoch + M.clock, "efeito ativo")
+	UI.close()
+end)
+
+test("loja em seções e estoque limitado diário", function()
+	local p = profile()
+	p.level = 25
+	p.credits = p.credits + 10000000
+	UI.open("Shop")
+	M.advance(0.5)
+	for i = 1, 5 do
+		local r = invoke(S2, "RequestCaseOpen", alice2, { action = "open", caseId = "lucky", quantity = 1 })
+		truthy(r.ok, tostring(r.message))
+		M.advance(1.2)
+	end
+	local r6 = invoke(S2, "RequestCaseOpen", alice2, { action = "open", caseId = "lucky", quantity = 1 })
+	eq(r6.error, "out_of_stock")
+	UI.close()
+end)
+
+test("índice por raridade e loja com seções", function()
+	UI.open("Collections")
+	M.advance(0.5)
+	click("Ver por raridade")
+	truthy(findButton("Ver por coleção"), "modo raridade ativo")
+	UI.close(true)
+	UI.open("Shop")
+	M.advance(0.3)
+	local found = {}
+	for _, d in ipairs(guiRoot():FindFirstChild("CaseShop"):GetDescendants()) do
+		if d:IsA("TextLabel") and d.Text and string.find(d.Text, "~ ", 1, true) then
+			found[d.Text] = true
+		end
+	end
+	truthy(found["~ Caixas de Nível ~"] and found["~ Caixas Especiais ~"] and found["~ Estoque Limitado ~"], "três seções")
+	UI.close(true)
 end)
 
 test("nenhum aviso inesperado no cliente", function()

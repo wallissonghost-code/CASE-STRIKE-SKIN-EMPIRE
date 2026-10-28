@@ -9,11 +9,13 @@ local SkinDefinitions = require(Shared.Config.SkinDefinitions)
 local CaseDefinitions = require(Shared.Config.CaseDefinitions)
 local ProgressionConfig = require(Shared.Config.ProgressionConfig)
 local AttributeConfig = require(Shared.Config.AttributeConfig)
+local ZoneConfig = require(Shared.Config.ZoneConfig)
+local PotionConfig = require(Shared.Config.PotionConfig)
 local BankMath = require(Shared.Logic.BankMath)
 
 local ProfileSchema = {}
 
-ProfileSchema.Version = 2
+ProfileSchema.Version = 3
 
 function ProfileSchema.new(now)
 	return {
@@ -39,6 +41,10 @@ function ProfileSchema.new(now)
 		titles = { novato = true },
 		cosmetics = {}, -- [id] = true (molduras, vitrines e variantes de coleção)
 		attributes = { luck = 0, xpBonus = 0, openSpeed = 0, multiOpen = 0 },
+		zones = { zone1 = true }, -- zonas desbloqueadas
+		potions = { luck = 0, xp = 0, income = 0 }, -- poções guardadas
+		activePotions = { luck = 0, xp = 0, income = 0 }, -- horário (servidor) em que cada efeito termina
+		stock = { day = -1, used = {} }, -- caixas de estoque limitado abertas no dia
 		equippedTitle = "novato",
 		missions = { day = -1, week = -1, daily = {}, weekly = {}, progress = {}, claimed = {} },
 		eventProgress = { eventId = "", progress = {}, claimed = {} },
@@ -224,6 +230,35 @@ function ProfileSchema.validate(profile, now)
 			end
 			profile.attributes[id] = lvl
 		end
+	end
+
+	-- zonas, poções e estoque
+	for id in pairs(profile.zones) do
+		if not ZoneConfig.ById[id] then
+			profile.zones[id] = nil
+		end
+	end
+	profile.zones.zone1 = true
+	for id in pairs(PotionConfig.Potions) do
+		local n = profile.potions[id] or 0
+		if not isInteger(n) or n < 0 then
+			issue("poções inválidas: " .. id)
+			n = 0
+		end
+		profile.potions[id] = n
+		local e = profile.activePotions[id] or 0
+		if type(e) ~= "number" or e < 0 then
+			e = 0
+		end
+		-- efeito não pode terminar além do limite máximo a partir de agora
+		if e > now + PotionConfig.Potions[id].maxStack then
+			issue("efeito de poção além do limite: " .. id)
+			e = now + PotionConfig.Potions[id].maxStack
+		end
+		profile.activePotions[id] = e
+	end
+	if type(profile.stock.used) ~= "table" then
+		profile.stock = { day = -1, used = {} }
 	end
 
 	-- showroom: só skins no inventário e dentro do limite de vagas

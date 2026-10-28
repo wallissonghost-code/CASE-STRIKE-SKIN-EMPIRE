@@ -31,7 +31,7 @@ end
 
 local function build()
 	local p = UI.createPanel("📖 Índice de Coleções", 1120, 640, "Collections")
-	local state = { collection = "all", rarity = "all", search = "", onlyMissing = false }
+	local state = { collection = "all", rarity = "all", search = "", onlyMissing = false, mode = "collection" }
 
 	local summary = UI.text({ Font = UI.Fonts.bold, TextSize = 15, Size = UDim2.new(1, 0, 0, 20), Parent = p.content })
 
@@ -43,14 +43,15 @@ local function build()
 	local bar = UI.frame({ BackgroundTransparency = 1, Position = UDim2.fromOffset(344, 28), Size = UDim2.new(1, -344, 0, 36), Parent = p.content })
 	UI.list(bar, 8, true)
 	local render
-	local colBtn = UI.button({ Text = "", TextSize = 13, color = UI.Theme.panel2, Size = UDim2.fromOffset(170, 34), Parent = bar })
-	local rarBtn = UI.button({ Text = "", TextSize = 13, color = UI.Theme.panel2, Size = UDim2.fromOffset(150, 34), Parent = bar })
-	local missBtn = UI.button({ Text = "", TextSize = 13, color = UI.Theme.panel2, Size = UDim2.fromOffset(150, 34), Parent = bar })
-	local search = UI.make("TextBox", { PlaceholderText = "🔎 Pesquisar", Text = "", ClearTextOnFocus = false, Font = UI.Fonts.body, TextSize = 14, TextColor3 = UI.Theme.text, BackgroundColor3 = UI.Theme.panel2, Size = UDim2.fromOffset(180, 34), Parent = bar })
+	local colBtn = UI.button({ Text = "", TextSize = 12, color = UI.Theme.panel2, Size = UDim2.fromOffset(140, 34), Parent = bar })
+	local rarBtn = UI.button({ Text = "", TextSize = 12, color = UI.Theme.panel2, Size = UDim2.fromOffset(130, 34), Parent = bar })
+	local missBtn = UI.button({ Text = "", TextSize = 12, color = UI.Theme.panel2, Size = UDim2.fromOffset(130, 34), Parent = bar })
+	local modeBtn = UI.button({ Text = "", TextSize = 12, color = UI.Theme.purple, Size = UDim2.fromOffset(140, 34), Parent = bar })
+	local search = UI.make("TextBox", { PlaceholderText = "🔎 Pesquisar", Text = "", ClearTextOnFocus = false, Font = UI.Fonts.body, TextSize = 14, TextColor3 = UI.Theme.text, BackgroundColor3 = UI.Theme.panel2, Size = UDim2.fromOffset(150, 34), Parent = bar })
 	UI.corner(search, 10)
 
 	local colOrder = { "all" }
-	for _, c in ipairs(CaseDefinitions.List) do
+	for _, c in ipairs(CaseDefinitions.Collections) do
 		table.insert(colOrder, c.id)
 	end
 	local rarOrder = { "all" }
@@ -85,6 +86,7 @@ local function build()
 		colBtn.Text = state.collection == "all" and "Todas coleções" or CaseDefinitions.ById[state.collection].name
 		rarBtn.Text = state.rarity == "all" and "Todas raridades" or RarityConfig.Rarities[state.rarity].displayName
 		missBtn.Text = state.onlyMissing and "Só não descobertas" or "Todas as skins"
+		modeBtn.Text = state.mode == "rarity" and "Ver por coleção" or "Ver por raridade"
 
 		local found = 0
 		for _ in pairs(view.discovered) do
@@ -96,10 +98,38 @@ local function build()
 				complete = complete + 1
 			end
 		end
-		summary.Text = "Descobertas: " .. found .. " / " .. SkinDefinitions.Count .. " (" .. math.floor(found / SkinDefinitions.Count * 100 + 0.5) .. "%)   •   Coleções completas: " .. complete .. " / " .. #CaseDefinitions.List
+		summary.Text = "Descobertas: " .. found .. " / " .. SkinDefinitions.Count .. " (" .. math.floor(found / SkinDefinitions.Count * 100 + 0.5) .. "%)   •   Coleções completas: " .. complete .. " / " .. #CaseDefinitions.Collections
 
 		UI.clear(cols)
-		for i, c in ipairs(CaseDefinitions.List) do
+		if state.mode == "rarity" then
+			-- progresso por raridade (itens cinza, verdes, azuis, roxos, dourados e vermelhos)
+			for i, r in ipairs(RarityConfig.Order) do
+				local total, got = 0, 0
+				for _, sk in ipairs(SkinDefinitions.List) do
+					if sk.rarity == r then
+						total = total + 1
+						if view.discovered[sk.id] then
+							got = got + 1
+						end
+					end
+				end
+				local color = UI.rarityColor(r)
+				local f = UI.make("TextButton", { Text = "", AutoButtonColor = true, BackgroundColor3 = UI.Theme.panel2:Lerp(color, 0.15), Size = UDim2.new(1, -8, 0, 70), LayoutOrder = i, Parent = cols })
+				UI.corner(f, 10)
+				UI.stroke(f, color, 2, 0.4)
+				UI.text({ Text = "Itens " .. RarityConfig.Rarities[r].displayName .. "s", Font = UI.Fonts.bold, TextSize = 15, TextColor3 = color, Size = UDim2.new(1, -20, 0, 20), Position = UDim2.fromOffset(10, 6), Parent = f })
+				UI.text({ Text = got .. " / " .. total .. " descobertos (" .. math.floor(got / math.max(1, total) * 100 + 0.5) .. "% concluído)", TextSize = 12, TextColor3 = UI.Theme.muted, Size = UDim2.new(1, -20, 0, 16), Position = UDim2.fromOffset(10, 28), Parent = f })
+				local back = UI.frame({ BackgroundColor3 = UI.Theme.bg, Size = UDim2.new(1, -20, 0, 8), Position = UDim2.fromOffset(10, 52), Parent = f })
+				UI.corner(back, 4)
+				local fill = UI.frame({ BackgroundColor3 = color, Size = UDim2.fromScale(got / math.max(1, total), 1), Parent = back })
+				UI.corner(fill, 4)
+				f.Activated:Connect(function()
+					state.rarity = (state.rarity == r) and "all" or r
+					render(view)
+				end)
+			end
+		end
+		for i, c in ipairs(state.mode == "rarity" and {} or CaseDefinitions.Collections) do
 			local st = view.collections[c.id]
 			local f = UI.frame({ BackgroundColor3 = UI.Theme.panel2:Lerp(UI.rgb(c.color), 0.2), Size = UDim2.new(1, -8, 0, 112), LayoutOrder = i, Parent = cols })
 			UI.corner(f, 10)
@@ -182,6 +212,12 @@ local function build()
 	end)
 	rarBtn.Activated:Connect(function()
 		state.rarity = nextOf(rarOrder, state.rarity)
+		if lastView then
+			render(lastView)
+		end
+	end)
+	modeBtn.Activated:Connect(function()
+		state.mode = state.mode == "rarity" and "collection" or "rarity"
 		if lastView then
 			render(lastView)
 		end

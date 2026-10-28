@@ -188,7 +188,7 @@ function LobbyService.start()
 	root.Parent = workspace
 
 	-- terreno e praça
-	part({ Name = "Ground", Size = Vector3.new(360, 2, 360), CFrame = CFrame.new(0, -1, 0), Color = Color3.fromRGB(100, 190, 90), Material = Enum.Material.Grass })
+	part({ Name = "Ground", Size = Vector3.new(640, 2, 640), CFrame = CFrame.new(0, -1, 0), Color = Color3.fromRGB(100, 190, 90), Material = Enum.Material.Grass })
 	part({ Name = "Plaza", Shape = Enum.PartType.Cylinder, Size = Vector3.new(0.4, 64, 64), CFrame = CFrame.new(0, 0.2, 0) * CFrame.Angles(0, 0, math.rad(90)), Color = Color3.fromRGB(235, 225, 200), Material = Enum.Material.Slate })
 	part({ Name = "PlazaRing", Shape = Enum.PartType.Cylinder, Size = Vector3.new(0.45, 20, 20), CFrame = CFrame.new(0, 0.22, 0) * CFrame.Angles(0, 0, math.rad(90)), Color = Color3.fromRGB(255, 190, 60), Material = Enum.Material.Neon, CanCollide = false })
 
@@ -297,8 +297,8 @@ function LobbyService.start()
 	path(Vector3.new(0, 0, 0), Vector3.new(-90, 0, 0), 6)
 
 	-- vitrine das 12 caixas na praça (a compra acontece na Loja)
-	for i, caseDef in ipairs(CaseDefinitions.List) do
-		local angle = (i - 1) / #CaseDefinitions.List * math.pi * 2
+	for i, caseDef in ipairs(CaseDefinitions.Collections) do
+		local angle = (i - 1) / #CaseDefinitions.Collections * math.pi * 2
 		local p = Vector3.new(math.cos(angle) * 24, 0, math.sin(angle) * 24)
 		part({ Name = "Pedestal", Size = Vector3.new(3.6, 2.2, 3.6), CFrame = CFrame.new(p + Vector3.new(0, 1.1, 0)), Color = Color3.fromRGB(245, 240, 230), Material = Enum.Material.Marble })
 		local model = CaseModelFactory.build(caseDef)
@@ -324,6 +324,9 @@ function LobbyService.start()
 		table.insert(avoid, { pt[2], 14 })
 	end
 	local function blocked(pos)
+		if math.abs(pos.X) > 170 or math.abs(pos.Z) > 170 then
+			return true -- além disso ficam as zonas (decoradas pelo ZoneService)
+		end
 		for _, a in ipairs(avoid) do
 			if (pos - a[1]).Magnitude < a[2] then
 				return true
@@ -354,10 +357,10 @@ function LobbyService.start()
 
 	-- cercas invisíveis nas bordas
 	for _, w in ipairs({
-		{ Vector3.new(0, 4, 175), Vector3.new(360, 8, 2) },
-		{ Vector3.new(0, 4, -175), Vector3.new(360, 8, 2) },
-		{ Vector3.new(175, 4, 0), Vector3.new(2, 8, 360) },
-		{ Vector3.new(-175, 4, 0), Vector3.new(2, 8, 360) },
+		{ Vector3.new(0, 4, 310), Vector3.new(640, 8, 2) },
+		{ Vector3.new(0, 4, -310), Vector3.new(640, 8, 2) },
+		{ Vector3.new(310, 4, 0), Vector3.new(2, 8, 640) },
+		{ Vector3.new(-310, 4, 0), Vector3.new(2, 8, 640) },
 	}) do
 		part({ Name = "Fence", Size = w[2], CFrame = CFrame.new(w[1]), Transparency = 1 })
 	end

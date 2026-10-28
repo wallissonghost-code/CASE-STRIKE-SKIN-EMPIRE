@@ -18,6 +18,8 @@ local ProgressionConfig = require(Shared.Config.ProgressionConfig)
 local LuckConfig = require(Shared.Config.LuckConfig)
 local EventDefinitions = require(Shared.Config.EventDefinitions)
 local AttributeConfig = require(Shared.Config.AttributeConfig)
+local ZoneConfig = require(Shared.Config.ZoneConfig)
+local PotionConfig = require(Shared.Config.PotionConfig)
 local AchievementDefinitions = require(Shared.Config.AchievementDefinitions)
 local Probability = require(Shared.Logic.Probability)
 local BankMath = require(Shared.Logic.BankMath)
@@ -66,6 +68,12 @@ ProfileOps.Messages = {
 	invalid_attribute = "Atributo inválido.",
 	showcase_full = "Todas as vagas do showroom estão ocupadas.",
 	cosmetic_locked = "Complete a coleção para desbloquear este cosmético.",
+	out_of_stock = "Estoque do dia esgotado. Renova às 00:00 (UTC).",
+	zone_owned = "Zona já desbloqueada.",
+	zone_requires = "Desbloqueie a zona anterior primeiro.",
+	invalid_zone = "Zona inválida.",
+	no_potion = "Você não tem essa poção.",
+	potion_max = "Tempo máximo desta poção já acumulado.",
 }
 
 ---------------------------------------------------------------------------
@@ -275,7 +283,8 @@ end
 ---------------------------------------------------------------------------
 
 -- Retorna (sorteTotal, listaDeFontes). Remove modificadores expirados.
-function ProfileOps.activeLuck(profile, now)
+-- zoneId: zona em que o SERVIDOR detectou o personagem (só conta se a zona estiver desbloqueada).
+function ProfileOps.activeLuck(profile, now, zoneId)
 	local list = {}
 	local kept = {}
 	for _, mod in ipairs(profile.luck.modifiers) do
@@ -339,9 +348,45 @@ function ProfileOps.activeLuck(profile, now)
 		end
 	end
 
+	local zone = zoneId and ZoneConfig.ById[zoneId]
+	if zone and zone.luck > 0 and profile.zones and profile.zones[zoneId] then
+		table.insert(list, {
+			id = "luck_zone",
+			displayName = zone.name,
+			source = "Zona do mapa (enquanto estiver nela)",
+			kind = "zone",
+			luck = zone.luck,
+		})
+	end
+
+	local potionEnd = profile.activePotions and profile.activePotions.luck or 0
+	if potionEnd > now then
+		table.insert(list, {
+			id = "luck_potion",
+			displayName = PotionConfig.Potions.luck.displayName,
+			source = "Poção ativada",
+			kind = "timed",
+			luck = PotionConfig.Potions.luck.luck,
+			expiresAt = potionEnd,
+		})
+	end
+
 	local total = 0
 	for _, e in ipairs(list) do
 		total = total + e.luck
+	end
+	-- evento relâmpago "2X Sorte" dobra a sorte de todas as fontes (ainda limitada ao teto)
+	local flash = EventDefinitions.flashAt(now)
+	if flash and flash.kind == "luck" then
+		table.insert(list, {
+			id = "luck_flash",
+			displayName = flash.name .. " (×" .. flash.multiplier .. ")",
+			source = "Evento relâmpago",
+			kind = "flash",
+			luck = total * (flash.multiplier - 1),
+			expiresAt = flash.endsAt,
+		})
+		total = total * flash.multiplier
 	end
 	return math.min(total, LuckConfig.MaxTotalLuck), list
 end
@@ -382,12 +427,12 @@ local function consumeLuckUses(profile, n)
 end
 
 -- Tabela de probabilidades finais (com sorte) que o servidor usará nesta abertura.
-function ProfileOps.caseOdds(profile, caseId, now)
+function ProfileOps.caseOdds(profile, caseId, now, zoneId)
 	local caseDef = CaseDefinitions.ById[caseId]
 	if not caseDef then
 		return nil
 	end
-	local luck = ProfileOps.activeLuck(profile, now)
+	local luck = ProfileOps.activeLuck(profile, now, zoneId)
 	return Probability.computeTable(caseDef, luck), luck
 end
 
@@ -397,7 +442,7 @@ end
 
 function ProfileOps.collectionStatus(profile)
 	local out = {}
-	for _, caseDef in ipairs(CaseDefinitions.List) do
+	for _, caseDef in ipairs(CaseDefinitions.Collections) do
 		local skins = SkinDefinitions.ByCase[caseDef.id]
 		local found = 0
 		for _, s in ipairs(skins) do
@@ -492,6 +537,15 @@ function ProfileOps.grantReward(profile, now, reward, xpSource)
 		ProfileOps.grantLuck(profile, reward.luck, now)
 		summary.luck = reward.luck
 	end
+	if reward.potions then
+		summary.potions = {}
+		for id, n in pairs(reward.potions) do
+			if PotionConfig.Potions[id] then
+				profile.potions[id] = (profile.potions[id] or 0) + n
+				summary.potions[id] = n
+			end
+		end
+	end
 	if reward.title and ProgressionConfig.Titles[reward.title] then
 		profile.titles[reward.title] = true
 		summary.title = reward.title
@@ -539,8 +593,15 @@ function ProfileOps.openCases(profile, ctx, caseId, quantity, opts)
 		return fail("insufficient_credits")
 	end
 
+	if caseDef.stockPerDay then
+		ProfileOps.refreshStock(profile, now)
+		if ProfileOps.stockLeft(profile, caseDef, now) < quantity then
+			return fail("out_of_stock")
+		end
+	end
+
 	ProfileOps.refreshPeriods(profile, now)
-	local luck = ProfileOps.activeLuck(profile, now)
+	local luck = ProfileOps.activeLuck(profile, now, ctx.zoneId)
 	local entries = Probability.computeTable(caseDef, luck)
 
 	-- 1) sorteia todos os resultados antes de alterar qualquer coisa
@@ -558,6 +619,9 @@ function ProfileOps.openCases(profile, ctx, caseId, quantity, opts)
 		profile.stats.creditsSpentOnCases = profile.stats.creditsSpentOnCases + cost
 	end
 	consumeLuckUses(profile, quantity)
+	if caseDef.stockPerDay then
+		profile.stock.used[caseId] = (profile.stock.used[caseId] or 0) + quantity
+	end
 
 	local results = {}
 	local levelsGained = 0
@@ -1029,6 +1093,71 @@ end
 function ProfileOps.setReduceEffects(profile, ctx, value)
 	profile.settings.reduceEffects = value == true
 	return true, { reduceEffects = profile.settings.reduceEffects }
+end
+
+---------------------------------------------------------------------------
+-- estoque limitado, zonas e poções
+---------------------------------------------------------------------------
+
+function ProfileOps.refreshStock(profile, now)
+	local day = TimeUtil.dayIndex(now)
+	if profile.stock.day ~= day then
+		profile.stock = { day = day, used = {} }
+	end
+end
+
+function ProfileOps.stockLeft(profile, caseDef, now)
+	if not caseDef.stockPerDay then
+		return math.huge
+	end
+	local day = TimeUtil.dayIndex(now)
+	local used = (profile.stock.day == day) and (profile.stock.used[caseDef.id] or 0) or 0
+	return math.max(0, caseDef.stockPerDay - used)
+end
+
+function ProfileOps.buyZone(profile, ctx, zoneId)
+	local zone = ZoneConfig.ById[zoneId]
+	if not zone or zone.cost <= 0 then
+		return fail("invalid_zone")
+	end
+	if profile.zones[zoneId] then
+		return fail("zone_owned")
+	end
+	if zone.requires and not profile.zones[zone.requires] then
+		return fail("zone_requires")
+	end
+	if profile.level < zone.requiredLevel then
+		return fail("level_locked")
+	end
+	if profile.credits < zone.cost then
+		return fail("insufficient_credits")
+	end
+	addCredits(profile, -zone.cost)
+	profile.zones[zoneId] = true
+	logTx(profile, ctx.now, "zone", { zone = zoneId, cost = zone.cost })
+	return true, { zone = zoneId, cost = zone.cost }
+end
+
+function ProfileOps.activatePotion(profile, ctx, potionId)
+	local now = ctx.now
+	local def = PotionConfig.Potions[potionId]
+	if not def then
+		return fail("invalid_request")
+	end
+	if (profile.potions[potionId] or 0) <= 0 then
+		return fail("no_potion")
+	end
+	local current = math.max(now, profile.activePotions[potionId] or 0)
+	if current - now >= def.maxStack then
+		return fail("potion_max")
+	end
+	if potionId == "income" then
+		BankMath.settle(profile, now) -- liquida com a taxa antiga antes de mudar
+	end
+	profile.potions[potionId] = profile.potions[potionId] - 1
+	profile.activePotions[potionId] = math.min(current + def.duration, now + def.maxStack)
+	logTx(profile, now, "potion", { potion = potionId })
+	return true, { potion = potionId, endsAt = profile.activePotions[potionId] }
 end
 
 ---------------------------------------------------------------------------

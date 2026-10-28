@@ -76,6 +76,7 @@ end
 local PATTERNS = { "stripes", "bands", "solid", "panels" }
 
 for _, entry in ipairs(CaseCatalog.List) do
+	if entry.skins then
 	local caseId = entry.id
 	SkinDefinitions.CasePrices[caseId] = entry.price
 	SkinDefinitions.ByCase[caseId] = {}
@@ -136,6 +137,7 @@ for _, entry in ipairs(CaseCatalog.List) do
 		table.insert(SkinDefinitions.List, def)
 		SkinDefinitions.ById[def.id] = def
 		table.insert(SkinDefinitions.ByCase[caseId], def)
+	end
 	end
 end
 

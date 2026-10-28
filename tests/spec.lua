@@ -145,8 +145,8 @@ print("== Conteúdo e configuração ==")
 
 test("60 skins e 12 caixas com 5 skins cada", function()
 	eq(SkinDefinitions.Count, 60)
-	eq(#CaseDefinitions.List, 12)
-	for _, c in ipairs(CaseDefinitions.List) do
+	eq(#CaseDefinitions.Collections, 12)
+	for _, c in ipairs(CaseDefinitions.Collections) do
 		eq(#c.drops, 5, "skins na caixa " .. c.id)
 	end
 	local cats = {}
@@ -210,7 +210,7 @@ end)
 test("sorte aumenta raras, mantém soma e respeita teto", function()
 	local c = CaseDefinitions.ById.phantom
 	local base = Probability.byRarity(Probability.computeTable(c, 0))
-	local lucky = Probability.byRarity(Probability.computeTable(c, 0.25))
+	local lucky = Probability.byRarity(Probability.computeTable(c, 0.40))
 	local capped = Probability.byRarity(Probability.computeTable(c, 99))
 	truthy(lucky.Secret > base.Secret and lucky.Uncommon < base.Uncommon)
 	near(capped.Secret, lucky.Secret, 1e-12, "teto de sorte")
@@ -841,8 +841,10 @@ test("limite offline aumenta com a melhoria", function()
 	p.bank.upgrades.offline = 2
 	eq(BankMath.offlineCap(p), base + 4 * 3600)
 	local rate = BankMath.totalRate(p)
-	BankMath.settle(p, NOW + 100 * 3600)
-	near(p.bank.pending, math.min(rate * (base + 4 * 3600), BankMath.storageCap(p)), 1e-6)
+	local t = NOW + 100 * 3600
+	BankMath.settle(p, t)
+	local cap = base + 4 * 3600
+	near(p.bank.pending, math.min(rate * BankMath.boostedSeconds(p, t - cap, t), BankMath.storageCap(p)), 1e-6)
 end)
 
 test("showroom: limite de vagas e depósito remove a exposição", function()
@@ -886,6 +888,135 @@ test("evolução não trava sem créditos: caixa Starter acessível e presente d
 	p.credits = 0
 	truthy(ProfileOps.claimDaily(p, ctx()))
 	truthy(p.credits >= CaseDefinitions.ById.starter.price)
+end)
+
+print("== Zonas, poções, eventos 2X e loja em seções ==")
+
+local ZoneConfig = shared_module("Config/ZoneConfig")
+local PotionConfig = shared_module("Config/PotionConfig")
+local EventDefinitions = shared_module("Config/EventDefinitions")
+
+test("zonas: compra em ordem, nível e custo; sorte só dentro e desbloqueada", function()
+	local p = fresh()
+	p.credits = 1e6
+	local ok, code = ProfileOps.buyZone(p, ctx(), "zone3")
+	eq(code, "zone_requires")
+	ok, code = ProfileOps.buyZone(p, ctx(), "zone2")
+	eq(code, "level_locked")
+	p.level = 30
+	truthy(ProfileOps.buyZone(p, ctx(), "zone2"))
+	ok, code = ProfileOps.buyZone(p, ctx(), "zone2")
+	eq(code, "zone_owned")
+	local quiet = 1794200000 -- fora de eventos e de relâmpago de sorte
+	while EventDefinitions.flashAt(quiet) do
+		quiet = quiet + 1800
+	end
+	local outside = ProfileOps.activeLuck(p, quiet, "zone1")
+	local inside = ProfileOps.activeLuck(p, quiet, "zone2")
+	near(inside - outside, 0.05, 1e-9)
+	local lockedZone = ProfileOps.activeLuck(p, quiet, "zone3")
+	near(lockedZone, outside, 1e-9, "zona bloqueada não dá sorte")
+	eq(ZoneConfig.zoneAt(235, 0), "zone2")
+	eq(ZoneConfig.zoneAt(0, 0), "zone1")
+end)
+
+test("poções: ativação acumula até o limite e consome do estoque", function()
+	local p = fresh()
+	local ok, code = ProfileOps.activatePotion(p, ctx(), "luck")
+	eq(code, "no_potion")
+	p.potions.luck = 10
+	local def = PotionConfig.Potions.luck
+	for _ = 1, def.maxStack / def.duration do
+		truthy(ProfileOps.activatePotion(p, ctx(), "luck"))
+	end
+	ok, code = ProfileOps.activatePotion(p, ctx(), "luck")
+	eq(code, "potion_max")
+	eq(p.activePotions.luck, NOW + def.maxStack)
+	eq(p.potions.luck, 10 - def.maxStack / def.duration)
+end)
+
+test("poção de XP dobra o XP; de renda soma 50% só enquanto ativa", function()
+	local Progression = shared_module("Logic/Progression")
+	local p = fresh()
+	local quiet = 1794200000
+	while EventDefinitions.flashAt(quiet) do
+		quiet = quiet + 1800
+	end
+	p.activePotions.xp = quiet + 600
+	eq(Progression.xpMultiplier(p, quiet), 2)
+	eq(Progression.xpMultiplier(p, quiet + 601), 1)
+	p.activePotions.income = quiet + 100
+	local secs = BankMath.boostedSeconds(p, quiet, quiet + 200)
+	local flashExtra = 0
+	for _, w in ipairs(EventDefinitions.flashWindows(quiet, quiet + 200, "income")) do
+		flashExtra = flashExtra + 1
+	end
+	eq(flashExtra, 0)
+	near(secs, 200 + 100 * 0.5, 1e-9)
+end)
+
+test("eventos relâmpago: agenda real, alternância e duração", function()
+	local F = EventDefinitions.Flash
+	local t0 = 1794182400 -- múltiplo do período
+	t0 = t0 - (t0 % F.period)
+	local a = EventDefinitions.flashAt(t0 + 60)
+	truthy(a and a.endsAt - a.startsAt == F.duration)
+	eq(EventDefinitions.flashAt(t0 + F.duration + 1), nil)
+	local nxt = EventDefinitions.nextFlash(t0 + F.duration + 1)
+	eq(nxt.startsAt, t0 + F.period)
+	truthy(nxt.kind ~= a.kind, "tipos alternam")
+	-- 2X sorte dobra o total (com teto)
+	local p = fresh()
+	p.attributes.luck = 5
+	local luckSlot
+	local t = t0
+	for _ = 1, 3 do
+		local f = EventDefinitions.flashAt(t + 60)
+		if f.kind == "luck" then
+			luckSlot = t + 60
+		end
+		t = t + F.period
+	end
+	local base = ProfileOps.activeLuck(p, luckSlot + F.duration + 10)
+	local doubled = ProfileOps.activeLuck(p, luckSlot)
+	truthy(doubled > base, "2X sorte aplicado")
+end)
+
+test("loja em seções: especiais com preço pelo valor esperado e estoque diário", function()
+	local sections = {}
+	for _, c in ipairs(CaseDefinitions.List) do
+		sections[c.section] = (sections[c.section] or 0) + 1
+	end
+	eq(sections.level, 12)
+	truthy(sections.special >= 2 and sections.limited >= 2)
+	for _, c in ipairs(CaseDefinitions.List) do
+		local ev = Probability.expectedValue(Probability.computeTable(c, 0), SkinDefinitions)
+		local ratio = ev / c.price
+		truthy(ratio > 0.85 and ratio < 0.95, c.id .. " EV/preço = " .. ratio)
+	end
+	local knives = CaseDefinitions.ById.knives
+	for _, d in ipairs(knives.drops) do
+		eq(SkinDefinitions.ById[d.skinId].category, "Knife")
+	end
+	local p = fresh()
+	p.level = 30
+	p.credits = 1e8
+	local lucky = CaseDefinitions.ById.lucky
+	for _ = 1, lucky.stockPerDay do
+		truthy(ProfileOps.openCases(p, ctx(), "lucky", 1, {}))
+	end
+	local before = p.credits
+	local ok, code = ProfileOps.openCases(p, ctx(), "lucky", 1, {})
+	eq(code, "out_of_stock")
+	eq(p.credits, before)
+	truthy(ProfileOps.openCases(p, ctx(NOW + 86400), "lucky", 1, {}), "estoque renova no dia seguinte")
+end)
+
+test("recompensas com poções", function()
+	local p = fresh()
+	ProfileOps.grantReward(p, NOW, { potions = { luck = 2, income = 1 } }, nil)
+	eq(p.potions.luck, 2)
+	eq(p.potions.income, 1)
 end)
 
 print(string.format("\n%d passaram, %d falharam", passed, failed))

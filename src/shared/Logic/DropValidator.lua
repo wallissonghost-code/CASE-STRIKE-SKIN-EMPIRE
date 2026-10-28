@@ -12,6 +12,8 @@ local MissionDefinitions = require(Shared.Config.MissionDefinitions)
 local EventDefinitions = require(Shared.Config.EventDefinitions)
 local AchievementDefinitions = require(Shared.Config.AchievementDefinitions)
 local LuckConfig = require(Shared.Config.LuckConfig)
+local PotionConfig = require(Shared.Config.PotionConfig)
+local ZoneConfig = require(Shared.Config.ZoneConfig)
 local Probability = require(Shared.Logic.Probability)
 
 local DropValidator = {}
@@ -101,6 +103,11 @@ function DropValidator.validate()
 		if r.luck and not LuckConfig.Modifiers[r.luck] then
 			err(nil, where .. ": bônus de sorte inexistente " .. r.luck)
 		end
+		for id in pairs(r.potions or {}) do
+			if not PotionConfig.Potions[id] then
+				err(nil, where .. ": poção inexistente " .. id)
+			end
+		end
 	end
 	for level, r in pairs(ProgressionConfig.LevelRewards) do
 		checkReward("recompensa de nível " .. tostring(level), r)
@@ -114,7 +121,7 @@ function DropValidator.validate()
 		end
 		checkReward("coleção " .. colId, r)
 	end
-	for _, c in ipairs(CaseDefinitions.List) do
+	for _, c in ipairs(CaseDefinitions.Collections) do
 		if not ProgressionConfig.CollectionRewards[c.id] then
 			err(nil, "coleção sem recompensa: " .. c.id)
 		end
@@ -139,6 +146,16 @@ function DropValidator.validate()
 	for _, colId in ipairs(EventDefinitions.WeeklyFeaturedRotation) do
 		if not CaseDefinitions.ById[colId] then
 			err(nil, "rotação semanal com coleção inexistente: " .. colId)
+		end
+	end
+	for _, z in ipairs(ZoneConfig.Zones) do
+		if z.requires and not ZoneConfig.ById[z.requires] then
+			err(nil, "zona exige zona inexistente: " .. z.id)
+		end
+	end
+	for _, c in ipairs(CaseDefinitions.List) do
+		if #c.drops < 2 then
+			err(c.id, c.id .. ": caixa precisa de pelo menos 2 recompensas")
 		end
 	end
 	return errors, badCases

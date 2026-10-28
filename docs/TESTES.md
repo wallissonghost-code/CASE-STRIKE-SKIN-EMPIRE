@@ -1,6 +1,6 @@
 # Registro de testes — V4.0
 
-Executados com `python3 tests/harness.py` em 28/10/2026: **50 testes de lógica e 35 de servidor+cliente, todos passando**, mais `tests/check_requires.py` sem erros.
+Executados com `python3 tests/harness.py` em 28/10/2026: **56 testes de lógica e 39 de servidor+cliente, todos passando** (inclui zonas, poções, eventos 2X, loja em seções e estoque limitado), mais `tests/check_requires.py` sem erros.
 
 "Simulado" = servidor (`Main.server.lua`) e cliente (`Main.client.lua`) reais rodando em `tests/roblox_mock.lua`, com DataStore em memória (inclusive falhas), relógio virtual e cliques reais nos botões da interface. Não substitui o Roblox Studio: itens marcados ⚠️ precisam do roteiro manual abaixo.
 

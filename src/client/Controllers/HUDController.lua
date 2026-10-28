@@ -174,6 +174,21 @@ function HUD.init()
 	refs.equipValue = statBox(econ, "VALOR DOS EQUIPAMENTOS", UI.Theme.purple, 3)
 	refs.income = statBox(econ, "RENDA POR SEGUNDO", UI.Theme.blue, 4)
 
+	-- poções ativas (como no HUD de referência: ícones com tempo restante)
+	local potionRow = UI.frame({ BackgroundTransparency = 1, AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 100, 1, -140), Size = UDim2.fromOffset(240, 60), Parent = layer })
+	UI.list(potionRow, 8, true)
+	refs.potionRow = potionRow
+	refs.potionIcons = {}
+	for i, id in ipairs({ "luck", "xp", "income" }) do
+		local icons = { luck = "🍀", xp = "📘", income = "💰" }
+		local b = UI.button({ Text = icons[id], TextSize = 24, color = UI.Theme.panel, BackgroundTransparency = 0.15, Size = UDim2.fromOffset(56, 56), LayoutOrder = i, Parent = potionRow, onClick = function()
+			UI.toggle("Potions")
+		end })
+		local t = UI.text({ Text = "", Font = UI.Fonts.bold, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Center, TextStrokeTransparency = 0.3, AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 0, 1, 2), Size = UDim2.new(1, 0, 0, 14), Parent = b })
+		local c = UI.text({ Text = "", Font = UI.Fonts.bold, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Right, Position = UDim2.fromOffset(0, 1), Size = UDim2.new(1, -4, 0, 14), Parent = b })
+		refs.potionIcons[id] = { button = b, timer = t, count = c }
+	end
+
 	-- inferior central: barra de XP
 	local xpBack = UI.frame({ AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -16), Size = UDim2.fromOffset(420, 30), BackgroundColor3 = UI.Theme.bg, BackgroundTransparency = 0.25, Parent = layer })
 	UI.corner(xpBack, 15)
@@ -200,7 +215,7 @@ function HUD.init()
 	refs.caseBtn = caseBtn
 
 	-- ao abrir um painel, esconde os elementos secundários do HUD para evitar sobreposição
-	refs.secondary = { left, right, econ, caseBtn, ev }
+	refs.secondary = { left, right, econ, caseBtn, ev, potionRow }
 	UI.onPanelChanged(function(current)
 		for _, g in ipairs(refs.secondary) do
 			g.Visible = current == nil
@@ -288,6 +303,23 @@ function HUD.tick()
 		return
 	end
 	local now = Store.serverNow()
+	-- poções
+	for _, pot in ipairs(view.potions or {}) do
+		local ref = refs.potionIcons[pot.id]
+		if ref then
+			local active = pot.endsAt > now
+			ref.timer.Text = active and Format.duration(pot.endsAt - now) or ""
+			ref.count.Text = pot.count > 0 and ("×" .. pot.count) or ""
+			ref.button.BackgroundColor3 = active and UI.Theme.good or UI.Theme.panel
+		end
+	end
+	-- evento relâmpago 2X tem prioridade no topo (contagem real pelo relógio do servidor)
+	local flash = view.flash
+	if flash and now < flash.endsAt then
+		refs.eventTitle.Text = flash.icon .. " " .. flash.name
+		refs.eventSub.Text = "Terminando em " .. Format.duration(flash.endsAt - now) .. (view.event and (" • " .. view.event.name) or "")
+		return
+	end
 	if view.event then
 		refs.eventTitle.Text = "🎉 " .. view.event.name
 		local nextTxt = view.nextEvent and (" • depois: " .. view.nextEvent.name) or ""
@@ -302,7 +334,8 @@ function HUD.tick()
 		end
 		refs.eventTitle.Text = "📜 Desafio diário: " .. done .. "/" .. total
 		local nextTxt = view.nextEvent and (" • próximo evento em " .. Format.duration(view.nextEvent.startsAt - now)) or ""
-		refs.eventSub.Text = "Novas missões em " .. Format.duration(view.daily.secondsUntilReset - (now - view.serverTime)) .. nextTxt
+		local flashTxt = view.nextFlash and (" • " .. view.nextFlash.name .. " em " .. Format.duration(view.nextFlash.startsAt - now)) or ""
+		refs.eventSub.Text = "Novas missões em " .. Format.duration(view.daily.secondsUntilReset - (now - view.serverTime)) .. flashTxt .. nextTxt
 	end
 end
 

@@ -8,13 +8,18 @@
 --   color/trim (RGB do modelo da caixa), palette (3 cores RGB das skins)
 --   rarityWeights (opcional): pesos por raridade SÓ desta caixa; sem ele usa RarityConfig.BaseWeights
 --   eventId (opcional): caixa disponível apenas durante esse evento
---   skins: lista { raridade, arma, acabamento } (ordem define o id: <caixa>_<NN>)
+--   section: "level" (Caixas de Nível — cada uma forma uma coleção), "special" (Caixas Especiais)
+--            ou "limited" (Estoque Limitado: stockPerDay aberturas por jogador por dia UTC)
+--   skins: lista { raridade, arma, acabamento } (ordem define o id: <caixa>_<NN>) — só caixas de coleção
+--   pool: (caixas especiais/limitadas) seleciona skins JÁ EXISTENTES por filtro
+--         { category, collections = {...}, minTier, maxTier }; sem price, o preço é calculado
+--         pelo valor esperado do sorteio (EV / TargetExpectedValue), sem desconto artificial.
 
 local CaseCatalog = {}
 
 CaseCatalog.List = {
 	{
-		id = "starter", name = "Caixa Starter", collection = "Coleção Recruta", price = 10, requiredLevel = 1,
+		id = "starter", name = "Caixa Starter", collection = "Coleção Recruta", price = 10, section = "level", requiredLevel = 1,
 		theme = "Primeiros passos do colecionador",
 		color = { 90, 150, 110 }, trim = { 240, 240, 240 },
 		palette = { { 110, 170, 120 }, { 235, 235, 225 }, { 60, 90, 70 } },
@@ -27,7 +32,7 @@ CaseCatalog.List = {
 		},
 	},
 	{
-		id = "urban", name = "Caixa Urban", collection = "Coleção Concreto", price = 25, requiredLevel = 1,
+		id = "urban", name = "Caixa Urban", collection = "Coleção Concreto", price = 25, section = "level", requiredLevel = 1,
 		theme = "Concreto e grafite da cidade",
 		color = { 130, 135, 145 }, trim = { 230, 110, 60 },
 		palette = { { 120, 124, 130 }, { 70, 72, 78 }, { 200, 90, 60 } },
@@ -40,7 +45,7 @@ CaseCatalog.List = {
 		},
 	},
 	{
-		id = "tactical", name = "Caixa Tactical", collection = "Coleção Operação", price = 75, requiredLevel = 3,
+		id = "tactical", name = "Caixa Tactical", collection = "Coleção Operação", price = 75, section = "level", requiredLevel = 3,
 		theme = "Equipamento militar e camuflagem",
 		color = { 95, 110, 70 }, trim = { 200, 180, 120 },
 		palette = { { 96, 110, 70 }, { 170, 150, 110 }, { 60, 66, 50 } },
@@ -53,7 +58,7 @@ CaseCatalog.List = {
 		},
 	},
 	{
-		id = "neon", name = "Caixa Neon", collection = "Coleção Fliperama", price = 150, requiredLevel = 5,
+		id = "neon", name = "Caixa Neon", collection = "Coleção Fliperama", price = 150, section = "level", requiredLevel = 5,
 		theme = "Fliperama, synthwave e luz",
 		color = { 60, 25, 100 }, trim = { 255, 70, 200 },
 		palette = { { 255, 70, 200 }, { 40, 230, 255 }, { 30, 20, 60 } },
@@ -66,7 +71,7 @@ CaseCatalog.List = {
 		},
 	},
 	{
-		id = "shadow", name = "Caixa Shadow", collection = "Coleção Eclipse", price = 300, requiredLevel = 8,
+		id = "shadow", name = "Caixa Shadow", collection = "Coleção Eclipse", price = 300, section = "level", requiredLevel = 8,
 		theme = "Fumaça, eclipse e trevas",
 		color = { 30, 28, 40 }, trim = { 140, 90, 220 },
 		palette = { { 30, 28, 40 }, { 90, 60, 140 }, { 15, 15, 20 } },
@@ -79,7 +84,7 @@ CaseCatalog.List = {
 		},
 	},
 	{
-		id = "chrome", name = "Caixa Chrome", collection = "Coleção Cromo", price = 600, requiredLevel = 12,
+		id = "chrome", name = "Caixa Chrome", collection = "Coleção Cromo", price = 600, section = "level", requiredLevel = 12,
 		theme = "Metal polido, espelhos e turbinas",
 		color = { 180, 190, 205 }, trim = { 90, 200, 255 },
 		palette = { { 200, 205, 215 }, { 120, 130, 145 }, { 90, 200, 255 } },
@@ -92,7 +97,7 @@ CaseCatalog.List = {
 		},
 	},
 	{
-		id = "phantom", name = "Caixa Phantom", collection = "Coleção Assombro", price = 1200, requiredLevel = 16,
+		id = "phantom", name = "Caixa Phantom", collection = "Coleção Assombro", price = 1200, section = "level", requiredLevel = 16,
 		theme = "Névoa, aparições e ectoplasma",
 		color = { 40, 60, 70 }, trim = { 120, 255, 200 },
 		palette = { { 60, 80, 90 }, { 120, 255, 200 }, { 20, 30, 35 } },
@@ -105,7 +110,7 @@ CaseCatalog.List = {
 		},
 	},
 	{
-		id = "elite", name = "Caixa Elite", collection = "Coleção Porcelana", price = 2500, requiredLevel = 20,
+		id = "elite", name = "Caixa Elite", collection = "Coleção Porcelana", price = 2500, section = "level", requiredLevel = 20,
 		theme = "Porcelana, mármore e ouro branco",
 		color = { 235, 235, 240 }, trim = { 215, 180, 90 },
 		palette = { { 235, 235, 240 }, { 210, 180, 90 }, { 60, 110, 200 } },
@@ -118,7 +123,7 @@ CaseCatalog.List = {
 		},
 	},
 	{
-		id = "diamond", name = "Caixa Diamond", collection = "Coleção Lapidada", price = 5000, requiredLevel = 28,
+		id = "diamond", name = "Caixa Diamond", collection = "Coleção Lapidada", price = 5000, section = "level", requiredLevel = 28,
 		theme = "Gemas, quartzo e facetas",
 		color = { 120, 200, 240 }, trim = { 255, 255, 255 },
 		palette = { { 150, 220, 250 }, { 240, 250, 255 }, { 80, 120, 200 } },
@@ -131,7 +136,7 @@ CaseCatalog.List = {
 		},
 	},
 	{
-		id = "royal", name = "Caixa Royal", collection = "Coleção Dinastia", price = 12000, requiredLevel = 40,
+		id = "royal", name = "Caixa Royal", collection = "Coleção Dinastia", price = 12000, section = "level", requiredLevel = 40,
 		theme = "Dinastias, brasões e estandartes",
 		color = { 150, 20, 30 }, trim = { 240, 190, 60 },
 		palette = { { 170, 25, 35 }, { 235, 185, 60 }, { 40, 30, 80 } },
@@ -144,7 +149,7 @@ CaseCatalog.List = {
 		},
 	},
 	{
-		id = "mythic", name = "Caixa Mythic", collection = "Coleção Bestiário", price = 30000, requiredLevel = 55,
+		id = "mythic", name = "Caixa Mythic", collection = "Coleção Bestiário", price = 30000, section = "level", requiredLevel = 55,
 		theme = "Criaturas lendárias e relíquias",
 		color = { 40, 120, 80 }, trim = { 255, 140, 40 },
 		palette = { { 40, 130, 90 }, { 255, 150, 50 }, { 30, 40, 40 } },
@@ -157,7 +162,7 @@ CaseCatalog.List = {
 		},
 	},
 	{
-		id = "infinity", name = "Caixa Infinity", collection = "Coleção Cosmos", price = 100000, requiredLevel = 75,
+		id = "infinity", name = "Caixa Infinity", collection = "Coleção Cosmos", price = 100000, section = "level", requiredLevel = 75,
 		theme = "Nebulosas, supernovas e o infinito",
 		color = { 20, 15, 45 }, trim = { 180, 120, 255 },
 		palette = { { 30, 20, 70 }, { 180, 120, 255 }, { 255, 230, 150 } },
@@ -169,6 +174,38 @@ CaseCatalog.List = {
 			{ "Secret", "BowieAtlas", "Infinito" },
 		},
 	},
+	-- ===== Caixas Especiais (usam skins das coleções; não formam coleção nova) =====
+	{
+		id = "knives", name = "Caixa das Facas", section = "special", requiredLevel = 10,
+		theme = "Só facas colecionáveis das coleções Fliperama a Porcelana",
+		color = { 40, 40, 50 }, trim = { 230, 230, 240 },
+		pool = { category = "Knife", collections = { "neon", "shadow", "chrome", "phantom", "elite" } },
+	},
+	{
+		id = "snipers", name = "Caixa Precisão", section = "special", requiredLevel = 6,
+		theme = "Armas de precisão das coleções iniciais",
+		color = { 60, 80, 60 }, trim = { 160, 230, 120 },
+		pool = { category = "Sniper", collections = { "tactical", "shadow", "phantom", "elite" } },
+	},
+	-- ===== Estoque Limitado (renova todo dia às 00:00 UTC) =====
+	{
+		id = "lucky", name = "Caixa Sortuda", section = "limited", requiredLevel = 12, stockPerDay = 5,
+		theme = "Só Raras ou melhores das primeiras coleções",
+		color = { 30, 140, 70 }, trim = { 120, 255, 140 },
+		pool = { minTier = 3, collections = { "starter", "urban", "tactical", "neon", "shadow", "chrome" } },
+	},
+	{
+		id = "flashcase", name = "Caixa Relâmpago", section = "limited", requiredLevel = 20, stockPerDay = 3,
+		theme = "Só Épicas ou melhores das coleções Assombro, Porcelana e Lapidada",
+		color = { 240, 200, 40 }, trim = { 255, 255, 255 },
+		pool = { minTier = 4, collections = { "phantom", "elite", "diamond" } },
+	},
+}
+
+CaseCatalog.Sections = {
+	{ id = "level", name = "Caixas de Nível" },
+	{ id = "special", name = "Caixas Especiais" },
+	{ id = "limited", name = "Estoque Limitado" },
 }
 
 -- Valor esperado alvo de uma abertura, em fração do preço (a caixa consome créditos;

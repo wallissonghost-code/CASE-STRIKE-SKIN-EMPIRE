@@ -318,7 +318,21 @@ function methods:GetDescendants()
 end
 methods.IsA = isA
 function methods:SetAttribute(k, v)
+	local old = rawget(self, "__attrs")[k]
 	rawget(self, "__attrs")[k] = v
+	local sigs = rawget(self, "__attrSignals")
+	if old ~= v and sigs and sigs[k] then
+		sigs[k]:Fire()
+	end
+end
+function methods:GetAttributeChangedSignal(k)
+	local sigs = rawget(self, "__attrSignals")
+	if not sigs then
+		sigs = {}
+		rawset(self, "__attrSignals", sigs)
+	end
+	sigs[k] = sigs[k] or newSignal()
+	return sigs[k]
 end
 function methods:GetAttribute(k)
 	return rawget(self, "__attrs")[k]

@@ -6,6 +6,8 @@ local BankConfig = require(Shared.Config.BankConfig)
 local RarityConfig = require(Shared.Config.RarityConfig)
 local SkinDefinitions = require(Shared.Config.SkinDefinitions)
 local ProgressionConfig = require(Shared.Config.ProgressionConfig)
+local PotionConfig = require(Shared.Config.PotionConfig)
+local EventDefinitions = require(Shared.Config.EventDefinitions)
 
 local BankMath = {}
 
@@ -81,6 +83,40 @@ function BankMath.totalRate(profile)
 	return rate
 end
 
+local function overlap(a1, a2, b1, b2)
+	return math.max(0, math.min(a2, b2) - math.max(a1, b1))
+end
+
+-- segundos "efetivos" de produção em [from, to], somando os bônus de renda ativos no período:
+-- poção de renda (até o horário em que termina) e eventos relâmpago "2X Renda".
+function BankMath.boostedSeconds(profile, from, to)
+	local secs = to - from
+	if secs <= 0 then
+		return 0
+	end
+	local potionEnd = (profile.activePotions and profile.activePotions.income) or 0
+	if potionEnd > from then
+		secs = secs + overlap(from, to, from, potionEnd) * (PotionConfig.Potions.income.incomeMultiplier - 1)
+	end
+	for _, w in ipairs(EventDefinitions.flashWindows(from, to, "income")) do
+		secs = secs + overlap(from, to, w.startsAt, w.endsAt) * (w.multiplier - 1)
+	end
+	return secs
+end
+
+-- multiplicador de renda neste instante (para exibir no banco/HUD)
+function BankMath.currentBoost(profile, now)
+	local mult = 1
+	if profile.activePotions and (profile.activePotions.income or 0) > now then
+		mult = mult + (PotionConfig.Potions.income.incomeMultiplier - 1)
+	end
+	local flash = EventDefinitions.flashAt(now)
+	if flash and flash.kind == "income" then
+		mult = mult + (flash.multiplier - 1)
+	end
+	return mult
+end
+
 -- Liquida a produção desde bank.lastTick até now.
 -- Limita o intervalo ao limite offline (BankMath.offlineCap) e o acumulado ao teto do cofre.
 -- Retorna o quanto foi produzido nesta liquidação.
@@ -99,7 +135,7 @@ function BankMath.settle(profile, now)
 	local before = bank.pending or 0
 	local produced = 0
 	if before < cap then
-		produced = BankMath.totalRate(profile) * dt
+		produced = BankMath.totalRate(profile) * BankMath.boostedSeconds(profile, now - dt, now)
 		bank.pending = math.min(cap, before + produced)
 		produced = bank.pending - before
 	end

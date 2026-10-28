@@ -747,6 +747,10 @@ function UI.rewardText(reward, Format, CaseDefinitions, EconomyConfig)
 	if reward.luck then
 		table.insert(parts, "bônus de sorte")
 	end
+	local potionNames = { luck = "Poção da Sorte", xp = "Poção de XP", income = "Poção de Renda" }
+	for id, n in pairs(reward.potions or {}) do
+		table.insert(parts, n .. "× " .. (potionNames[id] or id))
+	end
 	if reward.title then
 		table.insert(parts, "título")
 	end

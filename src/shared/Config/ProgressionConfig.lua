@@ -55,11 +55,11 @@ ProgressionConfig.LevelTitleOrder = { "novato", "colecionador", "especialista", 
 ProgressionConfig.LevelRewards = {
 	[2] = { credits = 200 },
 	[3] = { credits = 300, freeCases = { tactical = 1 } },
-	[5] = { credits = 500, materials = { scrap = 10, pigment = 2 } },
+	[5] = { credits = 500, materials = { scrap = 10, pigment = 2 }, potions = { xp = 1 } },
 	[8] = { credits = 900, freeCases = { neon = 1 } },
-	[10] = { credits = 1500, materials = { core = 1 } },
+	[10] = { credits = 1500, materials = { core = 1 }, potions = { luck = 2 } },
 	[15] = { credits = 3000, freeCases = { chrome = 1 } },
-	[20] = { credits = 6000, materials = { core = 2 } },
+	[20] = { credits = 6000, materials = { core = 2 }, potions = { income = 2 } },
 	[25] = { credits = 9000, freeCases = { elite = 1 } },
 	[30] = { credits = 15000, materials = { core = 3 } },
 	[40] = { credits = 30000, freeCases = { diamond = 1 } },
@@ -74,10 +74,10 @@ ProgressionConfig.LevelRewards = {
 ProgressionConfig.DailyRewards = {
 	{ credits = 100 },
 	{ credits = 150, materials = { scrap = 3 } },
-	{ credits = 200 },
+	{ credits = 200, potions = { luck = 1 } },
 	{ credits = 250, materials = { pigment = 1 } },
 	{ credits = 300, freeCases = { urban = 2 } },
-	{ credits = 400, materials = { scrap = 6 } },
+	{ credits = 400, materials = { scrap = 6 }, potions = { income = 1 } },
 	{ credits = 600, freeCases = { tactical = 1 }, luck = "luck_daily" },
 }
 

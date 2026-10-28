@@ -134,3 +134,64 @@ Coleção Cosmos • Nebulosas, supernovas e o infinito. Valor esperado por aber
 | infinity_04 | Faca Corvo — Buraco Negro | Faca | Secreta | 331364 | 4.167% | 11.7684/s |
 | infinity_05 | Bowie Atlas — Infinito | Faca | Secreta | 405000 | 4.167% | 12.0000/s |
 
+## Caixa das Facas — ₵ 7597 (nível 10)
+Caixa das Facas • Só facas colecionáveis das coleções Fliperama a Porcelana. Valor esperado por abertura: 6837.0 (90.0% do preço).
+
+| ID | Skin | Categoria | Raridade | Valor | Chance | Renda no banco |
+|---|---|---|---|---:|---:|---:|
+| neon_05 | Lira Borboleta — Prisma | Faca | Lendária | 1796 | 18.750% | 0.1515/s |
+| shadow_05 | Faca Corvo — Lua Nova | Faca | Lendária | 1802 | 18.750% | 0.1519/s |
+| chrome_05 | Fang Karambit — Mercúrio | Faca | Lendária | 3603 | 18.750% | 0.2681/s |
+| phantom_05 | Bowie Atlas — Véu Fantasma | Faca | Secreta | 17292 | 25.000% | 1.0450/s |
+| elite_04 | Fang Karambit — Esmeralda Real | Faca | Lendária | 6207 | 18.750% | 0.4188/s |
+
+## Caixa Precisão — ₵ 1232 (nível 6)
+Caixa Precisão • Armas de precisão das coleções iniciais. Valor esperado por abertura: 1108.7 (90.0% do preço).
+
+| ID | Skin | Categoria | Raridade | Valor | Chance | Renda no banco |
+|---|---|---|---|---:|---:|---:|
+| tactical_03 | Kestrel 50 — Camuflagem Digital | Arma de precisão | Rara | 139 | 34.483% | 0.0160/s |
+| tactical_05 | Longbow SR — Atirador Fantasma | Arma de precisão | Épica | 387 | 13.793% | 0.0397/s |
+| shadow_04 | Kestrel 50 — Espectro | Arma de precisão | Épica | 631 | 13.793% | 0.0593/s |
+| phantom_02 | Longbow SR — Aparição | Arma de precisão | Rara | 807 | 34.483% | 0.0677/s |
+| elite_05 | Kestrel 50 — Mármore Negro | Arma de precisão | Secreta | 18621 | 3.448% | 1.1104/s |
+
+## Caixa Sortuda — ₵ 611 (nível 12)
+Caixa Sortuda • Só Raras ou melhores das primeiras coleções. Valor esperado por abertura: 549.9 (90.0% do preço).
+
+| ID | Skin | Categoria | Raridade | Valor | Chance | Renda no banco |
+|---|---|---|---|---:|---:|---:|
+| starter_05 | Talon AR — Primeira Patente | Rifle | Rara | 26 | 8.065% | 0.0040/s |
+| urban_04 | Bastion R7 — Metrô Noturno | Rifle | Rara | 52 | 8.065% | 0.0071/s |
+| urban_05 | Gale C4 — Arranha-Céu | Rifle | Épica | 129 | 4.301% | 0.0161/s |
+| tactical_03 | Kestrel 50 — Camuflagem Digital | Arma de precisão | Rara | 139 | 8.065% | 0.0160/s |
+| tactical_04 | Bastion R7 — Ranger | Rifle | Rara | 170 | 8.065% | 0.0189/s |
+| tactical_05 | Longbow SR — Atirador Fantasma | Arma de precisão | Épica | 387 | 4.301% | 0.0397/s |
+| neon_03 | Talon AR — Holograma | Rifle | Rara | 251 | 8.064% | 0.0260/s |
+| neon_04 | Hornet MX — Pulso Ultravioleta | Submetralhadora | Épica | 629 | 4.301% | 0.0592/s |
+| neon_05 | Lira Borboleta — Prisma | Faca | Lendária | 1796 | 3.226% | 0.1515/s |
+| shadow_02 | Mako 45 — Abismo | Pistola | Rara | 227 | 8.064% | 0.0239/s |
+| shadow_03 | Talon AR — Meia-Noite | Rifle | Rara | 277 | 8.064% | 0.0282/s |
+| shadow_04 | Kestrel 50 — Espectro | Arma de precisão | Épica | 631 | 4.301% | 0.0593/s |
+| shadow_05 | Faca Corvo — Lua Nova | Faca | Lendária | 1802 | 3.226% | 0.1519/s |
+| chrome_02 | Ratchet V — Cromo Polido | Submetralhadora | Rara | 504 | 8.064% | 0.0460/s |
+| chrome_03 | Gale C4 — Aço Líquido | Rifle | Épica | 1135 | 4.301% | 0.0960/s |
+| chrome_04 | Bastion R7 — Turbina | Rifle | Épica | 1387 | 4.301% | 0.1131/s |
+| chrome_05 | Fang Karambit — Mercúrio | Faca | Lendária | 3603 | 3.226% | 0.2681/s |
+
+## Caixa Relâmpago — ₵ 6901 (nível 20)
+Caixa Relâmpago • Só Épicas ou melhores das coleções Assombro, Porcelana e Lapidada. Valor esperado por abertura: 6210.5 (90.0% do preço).
+
+| ID | Skin | Categoria | Raridade | Valor | Chance | Renda no banco |
+|---|---|---|---|---:|---:|---:|
+| phantom_03 | Rook R1 — Ectoplasma | Pistola | Épica | 2017 | 16.667% | 0.1538/s |
+| phantom_04 | Talon AR — Assombro | Rifle | Lendária | 5764 | 8.333% | 0.3942/s |
+| phantom_05 | Bowie Atlas — Véu Fantasma | Faca | Secreta | 17292 | 2.778% | 1.0450/s |
+| elite_03 | Talon AR — Coroa de Louros | Rifle | Épica | 2172 | 16.667% | 0.1634/s |
+| elite_04 | Fang Karambit — Esmeralda Real | Faca | Lendária | 6207 | 8.333% | 0.4188/s |
+| elite_05 | Kestrel 50 — Mármore Negro | Arma de precisão | Secreta | 18621 | 2.778% | 1.1104/s |
+| diamond_02 | Wasp K7 — Quartzo | Submetralhadora | Épica | 3910 | 16.667% | 0.2647/s |
+| diamond_03 | Bastion R7 — Facetas | Rifle | Épica | 4779 | 16.666% | 0.3120/s |
+| diamond_04 | Longbow SR — Brilhante | Arma de precisão | Lendária | 12414 | 8.333% | 0.7394/s |
+| diamond_05 | Lira Borboleta — Diamante Rosa | Faca | Secreta | 37241 | 2.778% | 1.9602/s |
+

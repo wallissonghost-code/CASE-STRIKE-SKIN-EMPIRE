@@ -5,7 +5,7 @@
 local LuckConfig = {}
 
 -- Sorte total máxima somando todas as fontes
-LuckConfig.MaxTotalLuck = 0.25
+LuckConfig.MaxTotalLuck = 0.40
 
 -- Quanto a sorte amplifica cada raridade (multiplicador = 1 + sorte * escala)
 -- Raridades sem escala (Comum/Incomum) não são amplificadas; após a normalização

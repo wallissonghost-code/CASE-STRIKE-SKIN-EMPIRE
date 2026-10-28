@@ -3,6 +3,8 @@
 local Shared = script.Parent.Parent
 local ProgressionConfig = require(Shared.Config.ProgressionConfig)
 local AttributeConfig = require(Shared.Config.AttributeConfig)
+local EventDefinitions = require(Shared.Config.EventDefinitions)
+local PotionConfig = require(Shared.Config.PotionConfig)
 local TimeUtil = require(Shared.Util.TimeUtil)
 
 local Progression = {}
@@ -12,17 +14,28 @@ function Progression.xpNeeded(level)
 end
 
 -- multiplicador de XP: atributo "Bônus de XP" + bônus moderado de renascimento
-function Progression.xpMultiplier(profile)
+-- (+ poção de XP e evento relâmpago "2X XP", multiplicativos)
+function Progression.xpMultiplier(profile, now)
 	local attr = (profile.attributes and profile.attributes.xpBonus) or 0
 	local R = ProgressionConfig.Rebirth
 	local rb = math.min((profile.rebirths or 0) * R.XpBonusPerRebirth, R.XpBonusMax)
-	return 1 + attr * AttributeConfig.Attributes.xpBonus.perLevel + rb
+	local mult = 1 + attr * AttributeConfig.Attributes.xpBonus.perLevel + rb
+	if now then
+		if profile.activePotions and (profile.activePotions.xp or 0) > now then
+			mult = mult * PotionConfig.Potions.xp.xpMultiplier
+		end
+		local flash = EventDefinitions.flashAt(now)
+		if flash and flash.kind == "xp" then
+			mult = mult * flash.multiplier
+		end
+	end
+	return mult
 end
 
 -- Adiciona XP (com multiplicador) respeitando limites diários das fontes repetitivas.
 -- Retorna (xpConcedido, niveisGanhos)
 function Progression.addXp(profile, amount, source, now)
-	amount = math.floor((amount or 0) * Progression.xpMultiplier(profile) + 0.5)
+	amount = math.floor((amount or 0) * Progression.xpMultiplier(profile, now) + 0.5)
 	if amount <= 0 then
 		return 0, 0
 	end

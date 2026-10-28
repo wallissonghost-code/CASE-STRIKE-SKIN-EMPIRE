@@ -34,8 +34,8 @@ python3 tools/gen_catalog.py    # regenera docs/CATALOGO.md
 | Camada | O que roda | Testes |
 |---|---|---:|
 | Sintaxe | todos os arquivos de `src/` | — |
-| Lógica (`tests/spec.lua`) | conteúdo, RNG, economia, banco, oficina, atributos, missões, renascimento, integridade | 50 |
-| Servidor + cliente (`tests/server_smoke.lua`) | `Main.server.lua` e `Main.client.lua` reais num Roblox simulado (`tests/roblox_mock.lua`): DataStore em memória com falhas, relógio virtual, cliques reais na interface | 35 |
+| Lógica (`tests/spec.lua`) | conteúdo, RNG, economia, banco, oficina, atributos, zonas, poções, eventos 2X, estoque, missões, renascimento, integridade | 56 |
+| Servidor + cliente (`tests/server_smoke.lua`) | `Main.server.lua` e `Main.client.lua` reais num Roblox simulado (`tests/roblox_mock.lua`): DataStore em memória com falhas, relógio virtual, cliques reais na interface | 39 |
 
 Registro dos 25 testes obrigatórios: [`docs/TESTES.md`](docs/TESTES.md). O código de `src/` usa um subconjunto de Luau compatível com o parser Lua (sem anotações de tipo, sem `+=`, sem `continue`) para poder ser testado fora do Studio.
 
@@ -111,6 +111,11 @@ Toda chamada passa por: formato validado → limite de frequência → deduplica
 - **Níveis e títulos**: Novato, Colecionador, Especialista, Magnata, Mestre e Lendário por nível, mais títulos de coleção, evento e renascimento; XP por descobertas, coleções, missões, melhorias e conquistas.
 - **Renascimento**: requisitos, mantido × reiniciado; preserva skins Raras ou melhores, favoritas, coleções, conquistas, atributos e cosméticos; confirmação `RENASCER`.
 - **Presentes, missões, índice, eventos e rankings**: diário de 7 dias pelo relógio do servidor, recompensas por nível e conquista; 3 diárias + 3 semanais (incluindo completar coleção e subir de nível); índice com silhuetas, % de progresso e recompensas de coleção (título, moldura, vitrine temática e variante); eventos Halloween, Semana Neon, Natal e Aniversário com datas reais; rankings de patrimônio, nível, skins únicas, coleções, conquistas e renda do banco, com cache.
+- **Zonas com sorte** (`ZoneConfig.lua`): Zona 2 Campos Floridos, Zona 3 Vale Assombrado e Zona 4 Cume Cristalino, cada uma com +5% de sorte enquanto o personagem estiver dentro. Desbloqueio em ordem com créditos e nível; o servidor detecta a posição a cada segundo e o cliente mostra barreiras só nas zonas ainda bloqueadas e o aviso "Zona 3 + 5% Sorte" ao entrar.
+- **Poções** (`PotionConfig.lua`): Sorte (+10%), XP (×2) e Renda (×1,5 no banco), ganhas em presentes, missões, níveis e conquistas, ativadas pelos ícones com tempo restante no HUD.
+- **Eventos relâmpago 2X** (`EventDefinitions.Flash`): a cada 3 h por 20 min, alternando 2X Sorte ("Evento de Trevo"), 2X XP e 2X Renda, com contagem real no topo da tela.
+- **Loja em seções**: Caixas de Nível (as 12 coleções), Caixas Especiais (Facas e Precisão) e Estoque Limitado (Sortuda 5/dia e Relâmpago 3/dia, renovação às 00:00 UTC). O preço das especiais é o valor esperado do sorteio ÷ 0,90.
+- **Índice por raridade**: progresso de itens Comuns, Incomuns, Raros, Épicos, Lendários e Secretos; e a skin equipada de maior valor aparece acima da cabeça, junto da placa.
 - **Persistência**: um documento por jogador, trava de sessão com `UpdateAsync`, salvamento automático, rápido e na saída, `BindToClose`, tentativas limitadas, registro das últimas transações e integridade ao carregar. Se os dados não carregarem com segurança, o jogador é desconectado com aviso em vez de receber um perfil vazio.
 - **Publicação GitHub → Roblox**: `.github/workflows/publish.yml` (manual, exige digitar `PUBLICAR`, roda os testes e usa a API oficial de publicação de places do Open Cloud). Precisa dos secrets `ROBLOX_API_KEY`, `ROBLOX_UNIVERSE_ID` e `ROBLOX_PLACE_ID`.
 

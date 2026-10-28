@@ -11,6 +11,9 @@ local ProfileOps = require(Shared.Logic.ProfileOps)
 local Wealth = require(Shared.Logic.Wealth)
 local Format = require(Shared.Util.Format)
 local ProgressionConfig = require(Shared.Config.ProgressionConfig)
+local SkinDefinitions = require(Shared.Config.SkinDefinitions)
+local RarityConfig = require(Shared.Config.RarityConfig)
+local SkinModelFactory = require(Shared.Visual.SkinModelFactory)
 
 local Remotes = require(script.Parent.Parent.Core.Remotes)
 local Validate = require(script.Parent.Parent.Core.Validate)
@@ -29,6 +32,20 @@ local function plateLines(player, profile)
 		"Nv " .. profile.level .. "  •  ₵ " .. Format.short(Wealth.netWorth(profile))
 end
 
+-- skin equipada de maior valor (exibida acima da cabeça, como vitrine pessoal)
+local function topEquipped(profile)
+	local best = nil
+	for _, item in pairs(profile.inventory) do
+		if item.equipped and item.location == "inventory" then
+			local def = SkinDefinitions.ById[item.defId]
+			if def and (not best or def.value > SkinDefinitions.ById[best.defId].value) then
+				best = item
+			end
+		end
+	end
+	return best
+end
+
 local function refreshPlate(player)
 	local profile = PlayerDataService.getProfile(player)
 	local character = player.Character
@@ -37,7 +54,17 @@ local function refreshPlate(player)
 		return
 	end
 	local name, title, stats = plateLines(player, profile)
-	local key = name .. "|" .. title .. "|" .. stats
+	local top = topEquipped(profile)
+	local topKey = ""
+	if top then
+		local ups = {}
+		for k in pairs(top.upgrades or {}) do
+			table.insert(ups, k)
+		end
+		table.sort(ups)
+		topKey = top.defId .. ":" .. table.concat(ups, ",")
+	end
+	local key = name .. "|" .. title .. "|" .. stats .. "|" .. topKey
 	local gui = head:FindFirstChild("CollectorPlate")
 	if gui and plateText[player] == key then
 		return
@@ -46,8 +73,8 @@ local function refreshPlate(player)
 	if not gui then
 		gui = Instance.new("BillboardGui")
 		gui.Name = "CollectorPlate"
-		gui.Size = UDim2.fromOffset(200, 54)
-		gui.StudsOffset = Vector3.new(0, 2.6, 0)
+		gui.Size = UDim2.fromOffset(200, 120)
+		gui.StudsOffset = Vector3.new(0, 3.6, 0)
 		gui.MaxDistance = 60
 		gui.LightInfluence = 0
 		gui.AlwaysOnTop = false
@@ -64,9 +91,17 @@ local function refreshPlate(player)
 			l.Parent = gui
 			return l
 		end
-		label("PlayerName", 0, 20, 16, Color3.new(1, 1, 1))
-		label("Title", 19, 16, 12, Color3.fromRGB(255, 190, 70))
-		label("Stats", 35, 16, 12, Color3.fromRGB(190, 230, 200))
+		local vp = Instance.new("ViewportFrame")
+		vp.Name = "TopSkin"
+		vp.BackgroundTransparency = 1
+		vp.Size = UDim2.new(1, 0, 0, 44)
+		vp.Ambient = Color3.fromRGB(190, 190, 200)
+		vp.LightDirection = Vector3.new(-1, -1, -1)
+		vp.Parent = gui
+		label("SkinValue", 44, 14, 11, Color3.fromRGB(255, 220, 120))
+		label("PlayerName", 60, 20, 16, Color3.new(1, 1, 1))
+		label("Title", 79, 16, 12, Color3.fromRGB(255, 190, 70))
+		label("Stats", 95, 16, 12, Color3.fromRGB(190, 230, 200))
 		gui.Parent = head
 		-- esconde o nome padrão do Roblox para não duplicar
 		local hum = character:FindFirstChildOfClass("Humanoid")
@@ -77,6 +112,28 @@ local function refreshPlate(player)
 	gui.PlayerName.Text = name
 	gui.Title.Text = title
 	gui.Stats.Text = stats
+	-- skin equipada de maior valor acima da cabeça
+	local vp = gui.TopSkin
+	for _, c in ipairs(vp:GetChildren()) do
+		c:Destroy()
+	end
+	if top then
+		local def = SkinDefinitions.ById[top.defId]
+		local model = SkinModelFactory.build(def, top.upgrades)
+		model:PivotTo(CFrame.new(0, 0, 0))
+		model.Parent = vp
+		local cam = Instance.new("Camera")
+		cam.FieldOfView = 30
+		local _, size = model:GetBoundingBox()
+		cam.CFrame = CFrame.lookAt(Vector3.new(0, 0, size.Magnitude * 1.6), Vector3.new(0, 0, 0))
+		cam.Parent = vp
+		vp.CurrentCamera = cam
+		local r = RarityConfig.Rarities[def.rarity]
+		gui.SkinValue.Text = def.finish .. " • ₵ " .. Format.short(def.value)
+		gui.SkinValue.TextColor3 = Color3.fromRGB(r.color[1], r.color[2], r.color[3])
+	else
+		gui.SkinValue.Text = ""
+	end
 end
 
 function ProgressionService.init() end

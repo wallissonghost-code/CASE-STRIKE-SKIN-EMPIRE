@@ -26,7 +26,7 @@ local FILTERS = {
 	sort = { { "value", "Maior valor" }, { "valueAsc", "Menor valor" }, { "rarity", "Raridade" }, { "recent", "Mais recentes" }, { "oldest", "Mais antigas" }, { "name", "Nome" } },
 	collection = { { "all", "Todas coleções" } },
 }
-for _, c in ipairs(CaseDefinitions.List) do
+for _, c in ipairs(CaseDefinitions.Collections) do
 	table.insert(FILTERS.collection, { c.id, c.collectionName })
 end
 

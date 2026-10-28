@@ -9,6 +9,7 @@ Remotes.init()
 local order = {
 	"PlayerDataService",
 	"LobbyService",
+	"ZoneService",
 	"CaseService",
 	"InventoryService",
 	"EconomyService",

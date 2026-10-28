@@ -149,7 +149,7 @@ function CaseService.start()
 		if not profile then
 			return Remotes.fail("not_loaded", "Carregando...")
 		end
-		local entries, luck = ProfileOps.caseOdds(profile, payload.caseId, DateTime.now().UnixTimestamp)
+		local entries, luck = ProfileOps.caseOdds(profile, payload.caseId, DateTime.now().UnixTimestamp, player:GetAttribute("ZoneId"))
 		if not entries then
 			return Remotes.fail("invalid_case", ProfileOps.Messages.invalid_case)
 		end
