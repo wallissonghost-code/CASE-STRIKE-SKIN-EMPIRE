@@ -6,6 +6,14 @@ Versão **0.2**. Tudo o que está liberado é real: o servidor decide saldo, sor
 
 ---
 
+## Teste rápido (sem Rojo)
+
+```bash
+python3 tools/build_place.py   # gera CaseStrike.rbxlx
+```
+
+Abra `CaseStrike.rbxlx` no Roblox Studio e aperte **Play**.
+
 ## Como abrir no Roblox Studio
 
 1. Instale o [Rojo](https://rojo.space) (CLI + plugin do Studio).
