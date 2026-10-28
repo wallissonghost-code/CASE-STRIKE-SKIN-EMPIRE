@@ -1,6 +1,7 @@
 -- Wealth: patrimônio líquido e valor dos equipamentos.
--- Patrimônio = créditos + valor de TODAS as skins possuídas (inventário + banco), cada instância uma única vez.
--- Os créditos pendentes no banco ainda não pertencem ao saldo e não entram no patrimônio.
+-- Patrimônio = saldo + valor de TODAS as skins possuídas (inventário + banco), cada instância uma única vez,
+-- + créditos pendentes de resgate no banco (parte inteira). Resgatar apenas move pendente -> saldo,
+-- então o patrimônio não muda (e a renda nunca é contada duas vezes).
 -- Valor dos equipamentos é apenas um indicador (as equipadas já estão contadas no patrimônio).
 
 local Shared = script.Parent.Parent
@@ -28,12 +29,14 @@ function Wealth.compute(profile)
 			end
 		end
 	end
+	local pending = math.floor((profile.bank and profile.bank.pending) or 0)
 	return {
 		credits = profile.credits,
+		pending = pending,
 		inventoryValue = inventoryValue,
 		bankValue = bankValue,
 		equipValue = equipValue,
-		netWorth = profile.credits + inventoryValue + bankValue,
+		netWorth = profile.credits + inventoryValue + bankValue + pending,
 		itemCount = count,
 	}
 end

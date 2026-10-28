@@ -8,6 +8,7 @@ local Format = require(Shared.Util.Format)
 local SkinDefinitions = require(Shared.Config.SkinDefinitions)
 local RarityConfig = require(Shared.Config.RarityConfig)
 local UpgradeRecipes = require(Shared.Config.UpgradeRecipes)
+local CaseDefinitions = require(Shared.Config.CaseDefinitions)
 local EconomyConfig = require(Shared.Config.EconomyConfig)
 
 local UI = require(script.Parent.UIController)
@@ -29,7 +30,7 @@ local function materialsText(mats, have)
 end
 
 local function build()
-	local p = UI.createPanel("🔧 Oficina de Melhorias", 1080, 620)
+	local p = UI.createPanel("🔧 Oficina de Melhorias", 1100, 640, "UpgradeWorkshop")
 	local state = { selected = nil, preview = nil }
 
 	local matsL = UI.text({ Font = UI.Fonts.bold, TextSize = 14, Size = UDim2.new(1, 0, 0, 20), Parent = p.content })
@@ -55,6 +56,26 @@ local function build()
 			return
 		end
 		local def = SkinDefinitions.ById[item.defId]
+		-- variante exclusiva da coleção (desbloqueada ao resgatar a coleção completa)
+		local unlocked = view.cosmetics["variant_" .. def.collection] == true
+		local caseDef = CaseDefinitions.ById[def.collection]
+		local vf = UI.frame({ BackgroundColor3 = UI.Theme.panel2:Lerp(UI.rgb(caseDef.trim), 0.18), Size = UDim2.new(1, -8, 0, 76), LayoutOrder = 0, Parent = recipes })
+		UI.corner(vf, 10)
+		UI.text({ Text = "Variante exclusiva — " .. caseDef.collectionName .. (item.upgrades.colVariant and "  ✔" or ""), Font = UI.Fonts.bold, TextSize = 14, Size = UDim2.new(1, -140, 0, 20), Position = UDim2.fromOffset(10, 6), Parent = vf })
+		UI.text({ Text = unlocked and "Grátis: paleta invertida exclusiva da coleção." or "Complete e resgate esta coleção no Índice para desbloquear.", TextSize = 12, TextColor3 = unlocked and UI.Theme.good or UI.Theme.muted, Size = UDim2.new(1, -140, 0, 36), Position = UDim2.fromOffset(10, 30), Parent = vf })
+		local vb = UI.button({
+			Text = item.upgrades.colVariant and "Aplicada" or "Aplicar grátis",
+			TextSize = 13,
+			color = UI.Theme.purple,
+			AnchorPoint = Vector2.new(1, 0.5),
+			Position = UDim2.new(1, -8, 0.5, 0),
+			Size = UDim2.fromOffset(120, 36),
+			Parent = vf,
+			onClick = function()
+				UI.handle(Net.call("UpgradeAction", { action = "collectionVariant", uid = item.uid }), "Variante da coleção aplicada!")
+			end,
+		})
+		UI.setEnabled(vb, unlocked and not item.upgrades.colVariant and item.location == "inventory", UI.Theme.purple)
 		for i, r in ipairs(UpgradeRecipes.List) do
 			local applied = item.upgrades[r.id] == true
 			local tierOk = RarityConfig.tier(def.rarity) >= r.minRarityTier
@@ -158,7 +179,7 @@ local function build()
 			UI.make("UIStroke", { Color = UI.rarityColor(def.rarity), Thickness = 1.5, Transparency = 0.4, ApplyStrokeMode = Enum.ApplyStrokeMode.Border, Parent = row })
 			UI.text({ Text = def.name, Font = UI.Fonts.bold, TextSize = 13, Size = UDim2.new(1, -20, 0, 20), Position = UDim2.fromOffset(10, 5), Parent = row })
 			UI.text({
-				Text = RarityConfig.Rarities[def.rarity].displayName .. " • " .. count .. "/5 melhorias" .. (item.location == "bank" and " • no banco" or ""),
+				Text = RarityConfig.Rarities[def.rarity].displayName .. " • " .. count .. "/" .. UpgradeRecipes.Count .. " melhorias" .. (item.location == "bank" and " • no banco" or ""),
 				TextSize = 11,
 				TextColor3 = UI.rarityColor(def.rarity),
 				Size = UDim2.new(1, -20, 0, 16),

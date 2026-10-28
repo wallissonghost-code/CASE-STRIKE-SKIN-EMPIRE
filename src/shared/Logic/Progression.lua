@@ -2,6 +2,7 @@
 
 local Shared = script.Parent.Parent
 local ProgressionConfig = require(Shared.Config.ProgressionConfig)
+local AttributeConfig = require(Shared.Config.AttributeConfig)
 local TimeUtil = require(Shared.Util.TimeUtil)
 
 local Progression = {}
@@ -10,10 +11,18 @@ function Progression.xpNeeded(level)
 	return ProgressionConfig.xpForLevel(level)
 end
 
--- Adiciona XP respeitando limites diários das fontes repetitivas.
+-- multiplicador de XP: atributo "Bônus de XP" + bônus moderado de renascimento
+function Progression.xpMultiplier(profile)
+	local attr = (profile.attributes and profile.attributes.xpBonus) or 0
+	local R = ProgressionConfig.Rebirth
+	local rb = math.min((profile.rebirths or 0) * R.XpBonusPerRebirth, R.XpBonusMax)
+	return 1 + attr * AttributeConfig.Attributes.xpBonus.perLevel + rb
+end
+
+-- Adiciona XP (com multiplicador) respeitando limites diários das fontes repetitivas.
 -- Retorna (xpConcedido, niveisGanhos)
 function Progression.addXp(profile, amount, source, now)
-	amount = math.floor(amount or 0)
+	amount = math.floor((amount or 0) * Progression.xpMultiplier(profile) + 0.5)
 	if amount <= 0 then
 		return 0, 0
 	end

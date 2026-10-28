@@ -37,7 +37,7 @@ end
 ---------------------------------------------------------------------------
 
 local function buildShop()
-	local p = UI.createPanel("🛒 Loja de Caixas", 980, 600)
+	local p = UI.createPanel("🛒 Loja de Caixas", 1000, 620, "CaseShop")
 	local cards = {}
 	local grid = UI.scroll({ Size = UDim2.fromScale(1, 1), Parent = p.content })
 	UI.make("UIGridLayout", { CellSize = UDim2.fromOffset(300, 250), CellPadding = UDim2.fromOffset(14, 14), SortOrder = Enum.SortOrder.LayoutOrder, Parent = grid })
@@ -54,7 +54,7 @@ local function buildShop()
 		local vp = UI.caseViewport(c, UDim2.new(1, 0, 0, 120), { spin = true, zoom = 1.25 })
 		vp.Parent = card
 		UI.text({ Text = c.name, Font = UI.Fonts.title, TextSize = 22, Size = UDim2.new(1, -20, 0, 26), Position = UDim2.fromOffset(12, 118), Parent = card })
-		UI.text({ Text = c.theme, TextSize = 13, TextColor3 = UI.Theme.muted, Size = UDim2.new(1, -20, 0, 18), Position = UDim2.fromOffset(12, 144), Parent = card })
+		UI.text({ Text = c.collectionName .. " • " .. c.theme, TextSize = 13, TextColor3 = UI.Theme.muted, Size = UDim2.new(1, -20, 0, 18), Position = UDim2.fromOffset(12, 144), Parent = card })
 		local preview = {}
 		for _, s in ipairs(rarestSkins(c.id, 3)) do
 			table.insert(preview, '<font color="#' .. UI.rarityColor(s.rarity):ToHex() .. '">' .. s.finish .. "</font>")
@@ -99,7 +99,7 @@ end
 ---------------------------------------------------------------------------
 
 local function buildCaseWindow()
-	local p = UI.createPanel("Caixa", 1000, 620)
+	local p = UI.createPanel("Caixa", 1040, 640, "CaseShop")
 	local state = { caseId = nil, quantity = 1, fast = false, useFree = false, odds = nil }
 
 	local left = UI.frame({ BackgroundTransparency = 1, Size = UDim2.new(0, 360, 1, 0), Parent = p.content })
@@ -114,13 +114,17 @@ local function buildCaseWindow()
 	local qtyButtons = {}
 	local refreshControls
 
-	for _, q in ipairs({ 1, 5, 10 }) do
+	for _, q in ipairs(CaseDefinitions.QuantityOrder) do
 		qtyButtons[q] = UI.button({
 			Text = "×" .. q,
 			color = UI.Theme.panel2,
-			Size = UDim2.fromOffset(80, 38),
+			Size = UDim2.fromOffset(84, 38),
 			Parent = qtyRow,
 			onClick = function()
+				if Store.view and q > Store.view.maxQuantity then
+					UI.toast("×" .. q .. " exige o atributo Limite de abertura múltipla (Atributos).", "error")
+					return
+				end
 				state.quantity = q
 				refreshControls()
 			end,
@@ -155,6 +159,7 @@ local function buildCaseWindow()
 		end
 		for q, b in pairs(qtyButtons) do
 			b.BackgroundColor3 = q == state.quantity and UI.Theme.accent or UI.Theme.panel2
+			b.Text = (q > view.maxQuantity) and ("🔒×" .. q) or ("×" .. q)
 		end
 		local free = view.freeCases[c.id] or 0
 		local canFree = free >= state.quantity
@@ -228,7 +233,7 @@ local function buildCaseWindow()
 			row.bar.BackgroundColor3 = color
 			row.name.Text = def.name
 			local discovered = view and view.discovered[def.id]
-			row.sub.Text = '<font color="#' .. color:ToHex() .. '">' .. RarityConfig.Rarities[def.rarity].displayName .. "</font> • " .. SkinDefinitions.Categories[def.category].displayName .. (discovered and " • ✔ descoberta" or "")
+			row.sub.Text = '<font color="#' .. color:ToHex() .. '">' .. RarityConfig.Rarities[def.rarity].displayName .. "</font> • " .. SkinDefinitions.Categories[def.category].displayName .. " • " .. c.collectionName .. (discovered and " • ✔ descoberta" or "")
 			row.value.Text = "₵ " .. Format.short(def.value)
 			row.pct.Text = string.gsub(string.format("%.3f", o.pct), "%.", ",") .. "%"
 		end
@@ -318,7 +323,7 @@ local function buildCaseWindow()
 				state.fast = Store.view.settings.fastOpen == true
 			end
 			p.title.Text = "📦 " .. c.name
-			themeLabel.Text = c.theme .. (c.available and "" or " • INDISPONÍVEL")
+			themeLabel.Text = c.collectionName .. " • " .. c.theme .. (c.available and "" or " • INDISPONÍVEL")
 			priceLabel.Text = "₵ " .. Format.int(c.price) .. " por caixa"
 			fetchOdds()
 		end,

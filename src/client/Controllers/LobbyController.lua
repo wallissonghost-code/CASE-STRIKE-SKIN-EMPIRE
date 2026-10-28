@@ -41,31 +41,40 @@ function Lobby.init()
 		end
 	end)
 
-	-- vitrine: gira as caixas da praça (apenas no cliente, sem custo no servidor)
+	-- vitrine e showroom: gira caixas e skins expostas (apenas no cliente, sem custo no servidor).
+	-- Acompanha modelos que entram/saem (as vitrines mudam quando os jogadores expõem skins).
 	local spinners = {}
-	local function scan()
-		spinners = {}
-		local lobby = workspace:FindFirstChild("Lobby")
-		if not lobby then
-			return
-		end
-		for _, m in ipairs(lobby:GetChildren()) do
-			if m:IsA("Model") and m:GetAttribute("Spin") then
-				table.insert(spinners, { model = m, base = m:GetPivot() })
-			end
+	local function track(m)
+		if m:IsA("Model") and m:GetAttribute("Spin") and not spinners[m] then
+			spinners[m] = { base = m:GetPivot(), phase = math.random() * 6 }
 		end
 	end
 	task.spawn(function()
-		workspace:WaitForChild("Lobby", 30)
-		task.wait(2)
-		scan()
+		local lobby = workspace:WaitForChild("Lobby", 30)
+		if not lobby then
+			return
+		end
+		for _, d in ipairs(lobby:GetDescendants()) do
+			track(d)
+		end
+		lobby.DescendantAdded:Connect(function(d)
+			task.defer(track, d)
+		end)
 	end)
 	local t = 0
+	local acc = 0
 	RunService.RenderStepped:Connect(function(dt)
 		t = t + dt
-		for _, s in ipairs(spinners) do
-			if s.model.Parent then
-				s.model:PivotTo(s.base * CFrame.new(0, math.sin(t * 1.5) * 0.3, 0) * CFrame.Angles(0, t * 0.8, 0))
+		acc = acc + dt
+		if acc < 1 / 30 then
+			return -- 30 atualizações por segundo bastam para a decoração (economiza no celular)
+		end
+		acc = 0
+		for m, s in pairs(spinners) do
+			if m.Parent then
+				m:PivotTo(s.base * CFrame.new(0, math.sin(t * 1.5 + s.phase) * 0.3, 0) * CFrame.Angles(0, t * 0.8 + s.phase, 0))
+			else
+				spinners[m] = nil
 			end
 		end
 	end)

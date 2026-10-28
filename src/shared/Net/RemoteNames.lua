@@ -2,12 +2,13 @@
 
 return {
 	Functions = {
-		"RequestCaseOpen", -- abrir caixas (resultado decidido no servidor)
-		"InventoryAction", -- vender, favoritar, equipar, desequipar
+		"RequestCaseOpen", -- abrir caixas (resultado decidido no servidor), automático, probabilidades
+		"InventoryAction", -- vender, favoritar, equipar, expor no showroom, configurações
 		"BankAction", -- depositar, retirar, resgatar, melhorar
-		"UpgradeAction", -- oficina
+		"UpgradeAction", -- oficina e variante de coleção
+		"ClaimReward", -- presentes, missões, desafios de evento, coleções, conquistas
 		"RequestData", -- pedir a fotografia completa do perfil
-		"ProgressionAction", -- presentes, missões, coleções, conquistas, títulos, renascimento
+		"ProgressionAction", -- atributos, títulos, renascimento
 		"LeaderboardRequest", -- ler rankings (cache do servidor)
 	},
 	Events = {

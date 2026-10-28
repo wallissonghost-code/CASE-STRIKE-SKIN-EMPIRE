@@ -167,6 +167,9 @@ function C3:ToHex()
 	return "FFFFFF"
 end
 Color3 = {
+	fromHSV = function(h, s, v)
+		return setmetatable({ R = v, G = v * (1 - s), B = v * (1 - s * h) }, C3)
+	end,
 	new = function(r, g, b)
 		return setmetatable({ R = r or 0, G = g or 0, B = b or 0 }, C3)
 	end,
@@ -185,6 +188,8 @@ local function opaqueLib(name)
 	})
 end
 UDim2 = opaqueLib("UDim2")
+NumberRange = opaqueLib("NumberRange")
+NumberSequence = opaqueLib("NumberSequence")
 UDim = opaqueLib("UDim")
 ColorSequence = opaqueLib("ColorSequence")
 TweenInfo = opaqueLib("TweenInfo")
@@ -252,7 +257,7 @@ end
 M.newSignal = newSignal
 
 local Inst = {}
-local SIGNALS = { Destroying = true, Triggered = true, Activated = true, InputBegan = true, MouseButton1Click = true, OnClientEvent = true }
+local SIGNALS = { Destroying = true, Triggered = true, Activated = true, InputBegan = true, InputEnded = true, InputChanged = true, MouseButton1Click = true, OnClientEvent = true, DescendantAdded = true, ChildAdded = true }
 local BASE_PART = { Part = true, WedgePart = true, SpawnLocation = true }
 local GUI_OBJECT = { Frame = true, TextLabel = true, TextButton = true, TextBox = true, ScrollingFrame = true, ViewportFrame = true, ImageLabel = true, ImageButton = true }
 
@@ -277,6 +282,14 @@ local methods = {}
 function methods:FindFirstChild(name)
 	for _, c in ipairs(rawget(self, "__children")) do
 		if c.Name == name then
+			return c
+		end
+	end
+	return nil
+end
+function methods:FindFirstChildOfClass(class)
+	for _, c in ipairs(rawget(self, "__children")) do
+		if rawget(c, "__class") == class then
 			return c
 		end
 	end

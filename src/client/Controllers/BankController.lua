@@ -7,6 +7,7 @@ local Format = require(Shared.Util.Format)
 local SkinDefinitions = require(Shared.Config.SkinDefinitions)
 local RarityConfig = require(Shared.Config.RarityConfig)
 local BankMath = require(Shared.Logic.BankMath)
+local BankConfig = require(Shared.Config.BankConfig)
 
 local UI = require(script.Parent.UIController)
 local Net = require(script.Parent.Parent.Util.Net)
@@ -14,8 +15,25 @@ local Store = require(script.Parent.Parent.Util.Store)
 
 local Bank = {}
 
+-- benefício de uma melhoria do banco em um nível (mostrado antes da compra)
+local function benefitText(id, level)
+	local u = BankConfig.Upgrades[id]
+	if id == "slots" then
+		return (BankConfig.BaseSlots + level * u.perLevel) .. " vagas"
+	elseif id == "efficiency" then
+		return "+" .. math.floor(level * u.perLevel * 100 + 0.5) .. "% de renda"
+	elseif id == "storage" then
+		return "cofre ₵ " .. Format.short(BankConfig.BaseStorage * ((1 + u.perLevel) ^ level))
+	elseif id == "offline" then
+		return Format.duration(BankConfig.MaxOfflineSeconds + level * u.perLevel) .. " offline"
+	elseif id == "display" then
+		return "+" .. level .. " vaga(s) de exibição"
+	end
+	return tostring(level)
+end
+
 local function build()
-	local p = UI.createPanel("🏦 Banco de Skins", 1080, 620)
+	local p = UI.createPanel("🏦 Banco de Skins", 1100, 640, "Bank")
 
 	-- resumo
 	local summary = UI.frame({ BackgroundColor3 = UI.Theme.panel2, BackgroundTransparency = 0.2, Size = UDim2.new(1, 0, 0, 96), Parent = p.content })
@@ -30,7 +48,7 @@ local function build()
 	local capFill = UI.frame({ BackgroundColor3 = UI.Theme.accent, Size = UDim2.fromScale(0, 1), Parent = capBack })
 	UI.corner(capFill, 4)
 	UI.button({
-		Text = "Resgatar créditos",
+		Text = "RESGATAR",
 		color = UI.Theme.good,
 		Font = UI.Fonts.title,
 		TextSize = 20,
@@ -56,7 +74,7 @@ local function build()
 		UI.list(s, 6)
 		return s
 	end
-	local depositedList = column("Skins depositadas", 0)
+	local depositedList = column("Vagas do banco", 0)
 	local candidateList = column("Depositar (maior renda primeiro)", colW + 14)
 	local upgradeList = column("Melhorias do banco", (colW + 14) * 2)
 
@@ -90,13 +108,24 @@ local function build()
 			if item.location == "bank" then
 				order = order + 1
 				local def = SkinDefinitions.ById[item.defId]
-				skinRow(depositedList, item, def, "+" .. Format.rate(item.income), "Retirar", UI.Theme.panel, function()
+				skinRow(depositedList, item, def, "₵ " .. Format.short(def.value) .. " • +" .. Format.rate(item.income), "RETIRAR", UI.Theme.panel, function()
 					UI.handle(Net.call("BankAction", { action = "withdraw", uid = item.uid }))
 				end, order)
 			end
 		end
-		if order == 0 then
-			UI.text({ Text = "Nenhuma skin depositada. Deposite skins para gerar renda passiva.", TextColor3 = UI.Theme.muted, TextSize = 13, Size = UDim2.new(1, 0, 0, 40), Parent = depositedList })
+		-- vagas livres e bloqueadas
+		for slot = order + 1, math.max(b.slots, b.maxSlotsShown) do
+			local free = slot <= b.slots
+			local f = UI.frame({ BackgroundColor3 = free and UI.Theme.panel2 or UI.Theme.bg, BackgroundTransparency = free and 0 or 0.3, Size = UDim2.new(1, -8, 0, 40), LayoutOrder = slot, Parent = depositedList })
+			UI.corner(f, 10)
+			UI.text({
+				Text = free and ("Vaga " .. slot .. " — livre") or ("🔒 Vaga " .. slot .. " — bloqueada (melhore Vagas extras)"),
+				TextSize = 12,
+				TextColor3 = free and UI.Theme.good or UI.Theme.muted,
+				Size = UDim2.new(1, -16, 1, 0),
+				Position = UDim2.fromOffset(10, 0),
+				Parent = f,
+			})
 		end
 
 		UI.clear(candidateList)
@@ -123,7 +152,9 @@ local function build()
 			local f = UI.frame({ BackgroundColor3 = UI.Theme.panel2, Size = UDim2.new(1, -8, 0, 86), LayoutOrder = i, Parent = upgradeList })
 			UI.corner(f, 10)
 			UI.text({ Text = u.displayName .. "  <font color='#A5AABE'>(" .. u.level .. "/" .. u.maxLevel .. ")</font>", Font = UI.Fonts.bold, TextSize = 15, Size = UDim2.new(1, -20, 0, 22), Position = UDim2.fromOffset(10, 6), Parent = f })
-			UI.text({ Text = u.description, TextSize = 12, TextColor3 = UI.Theme.muted, Size = UDim2.new(1, -130, 0, 18), Position = UDim2.fromOffset(10, 30), Parent = f })
+			local nowTxt = benefitText(u.id, u.level)
+			local nextTxt = u.level < u.maxLevel and (" → " .. benefitText(u.id, u.level + 1)) or ""
+			UI.text({ Text = "Atual: " .. nowTxt .. nextTxt, TextSize = 12, TextColor3 = UI.Theme.muted, Size = UDim2.new(1, -130, 0, 18), Position = UDim2.fromOffset(10, 30), Parent = f })
 			local maxed = u.level >= u.maxLevel
 			local req = (not maxed) and u.requiredLevel or 0
 			local lockedByLevel = (not maxed) and view.level < req

@@ -15,7 +15,7 @@ local GameCollectionService = {}
 function GameCollectionService.init() end
 
 function GameCollectionService.start()
-	Remotes.on("ProgressionAction", "claimCollection", "Progression", function(player, payload)
+	Remotes.on("ClaimReward", "claimCollection", "Progression", function(player, payload)
 		if not Validate.id(payload.collectionId, 24) then
 			return Remotes.fail("invalid_request", "Pedido inválido.")
 		end

@@ -1,6 +1,8 @@
--- SkinModelFactory: MODELOS PROVISÓRIOS das skins, gerados por código a partir de peças básicas.
--- Não usa IDs de assets. Cada categoria tem uma silhueta própria, colorida pela paleta da skin.
--- Para publicação, substitua por modelos próprios ou licenciados mantendo a mesma interface:
+-- SkinModelFactory: modelos 3D estilizados e de baixo custo das skins, gerados por código.
+-- Não usa IDs de assets. Cada categoria tem silhueta própria, cada arma tem detalhes próprios
+-- (supressor, carregador de tambor, mira, empunhadura...) e cada skin tem paleta e padrão.
+-- Melhorias da oficina alteram o modelo: acabamento, holográfica, dourada, partículas e variante.
+-- Interface estável para trocar por modelos feitos à mão no futuro:
 --   SkinModelFactory.build(def, upgrades) -> Model (PrimaryPart = "Root")
 
 local Shared = script.Parent.Parent
@@ -117,6 +119,40 @@ local function addPattern(m, pattern, color, length)
 	end
 end
 
+-- detalhes exclusivos por arma (eixo X = comprimento)
+local tweaks = {
+	Mako45 = function(m, col, mat)
+		part(m, "Compensator", Vector3.new(0.3, 0.2, 0.2), CFrame.new(1.1, 0.18, 0), col.secondary, mat)
+	end,
+	RookR1 = function(m, col, mat)
+		part(m, "Suppressor", Vector3.new(0.7, 0.16, 0.16), CFrame.new(1.35, 0.2, 0), col.secondary, mat, Enum.PartType.Cylinder)
+	end,
+	WaspK7 = function(m, col, mat)
+		part(m, "Drum", Vector3.new(0.3, 0.6, 0.6), CFrame.new(0.35, -0.55, 0) * CFrame.Angles(0, math.rad(90), 0), col.accent, mat, Enum.PartType.Cylinder)
+	end,
+	RatchetV = function(m, col, mat)
+		part(m, "Foregrip", Vector3.new(0.2, 0.45, 0.18), CFrame.new(0.8, -0.25, 0), col.secondary, mat)
+	end,
+	BastionR7 = function(m, col, mat)
+		part(m, "Optic", Vector3.new(0.5, 0.26, 0.22), CFrame.new(0.2, 0.55, 0), col.accent, mat)
+	end,
+	GaleC4 = function(m, col, mat)
+		part(m, "Bipod", Vector3.new(0.12, 0.6, 0.12), CFrame.new(2.0, -0.25, 0.12) * CFrame.Angles(0, 0, math.rad(20)), col.secondary, mat)
+		part(m, "Bipod2", Vector3.new(0.12, 0.6, 0.12), CFrame.new(2.0, -0.25, -0.12) * CFrame.Angles(0, 0, math.rad(20)), col.secondary, mat)
+	end,
+	Kestrel50 = function(m, col, mat)
+		part(m, "MuzzleBrake", Vector3.new(0.45, 0.32, 0.32), CFrame.new(3.75, 0.14, 0), col.primary, mat)
+	end,
+	BowieAtlas = function(m, col, mat)
+		part(m, "Spine", Vector3.new(0.9, 0.06, 0.08), CFrame.new(0.4, 0.17, 0), col.accent, mat)
+	end,
+	LiraBorboleta = function(m, col, mat)
+		part(m, "HandleSplit", Vector3.new(0.85, 0.08, 0.2), CFrame.new(-0.62, -0.15, 0), col.accent, mat)
+	end,
+}
+
+local GOLD = Color3.fromRGB(235, 185, 60)
+
 function SkinModelFactory.build(def, upgrades)
 	upgrades = upgrades or {}
 	local v = def.visual
@@ -125,10 +161,14 @@ function SkinModelFactory.build(def, upgrades)
 		secondary = c3(v.secondary),
 		accent = c3(v.accent),
 	}
-	if upgrades.variant then
+	if upgrades.colVariant then
+		-- variante exclusiva da coleção: paleta invertida
 		col.primary, col.secondary = col.secondary, col.primary
 	end
-	local mat = upgrades.finish and Enum.Material.Metal or Enum.Material.SmoothPlastic
+	if upgrades.gold then
+		col.primary = GOLD
+	end
+	local mat = (upgrades.finish or upgrades.gold) and Enum.Material.Metal or Enum.Material.SmoothPlastic
 
 	local model = Instance.new("Model")
 	model.Name = def.id
@@ -137,18 +177,32 @@ function SkinModelFactory.build(def, upgrades)
 	if def.category ~= "Knife" then
 		addPattern(model, v.pattern, col.accent, info.length)
 	end
+	local tweak = tweaks[def.weaponKey]
+	if tweak then
+		tweak(model, col, mat)
+	end
 
-	local glow = v.glow or upgrades.glow
+	local glow = v.glow or upgrades.particles
 	for _, name in ipairs(info.accentParts) do
 		local p = model:FindFirstChild(name)
 		if p and glow then
 			p.Material = Enum.Material.Neon
 		end
 	end
-	if upgrades.finish then
+	if upgrades.finish or upgrades.gold then
 		for _, p in ipairs(model:GetChildren()) do
 			if p:IsA("BasePart") and p.Material ~= Enum.Material.Neon then
-				p.Reflectance = 0.15
+				p.Reflectance = upgrades.gold and 0.25 or 0.15
+			end
+		end
+	end
+	if upgrades.holo then
+		-- holográfica: vidro iridescente nas peças principais
+		for i, p in ipairs(model:GetChildren()) do
+			if p:IsA("BasePart") and p.Material ~= Enum.Material.Neon then
+				p.Material = Enum.Material.Glass
+				p.Transparency = 0.15
+				p.Color = p.Color:Lerp(Color3.fromHSV((i * 0.13) % 1, 0.55, 1), 0.55)
 			end
 		end
 	end
@@ -166,7 +220,20 @@ function SkinModelFactory.build(def, upgrades)
 		light.Parent = root
 	end
 
-	-- marca de provisório (verificável antes da publicação)
+	if upgrades.particles then
+		-- poucas partículas para preservar o desempenho em celulares
+		local emitter = Instance.new("ParticleEmitter")
+		emitter.Name = "Sparkles"
+		emitter.Color = ColorSequence.new(col.accent)
+		emitter.LightEmission = 0.8
+		emitter.Rate = 6
+		emitter.Lifetime = NumberRange.new(0.6, 1.2)
+		emitter.Speed = NumberRange.new(0.3, 0.8)
+		emitter.Size = NumberSequence.new(0.15)
+		emitter.SpreadAngle = Vector2.new(180, 180)
+		emitter.Parent = root
+	end
+
 	model:SetAttribute("PlaceholderModel", v.placeholderModel == true)
 	model:SetAttribute("SkinId", def.id)
 	return model

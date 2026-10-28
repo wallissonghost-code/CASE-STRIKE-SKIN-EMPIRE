@@ -19,7 +19,13 @@ function BankMath.upgradeCost(id, currentLevel)
 end
 
 function BankMath.slots(profile)
-	return BankConfig.BaseSlots + BankMath.upgradeLevel(profile, "slots") * BankConfig.Upgrades.slots.perLevel
+	local rebirthSlots = math.floor((profile.rebirths or 0) / ProgressionConfig.Rebirth.ExtraBankSlotEvery)
+	return BankConfig.BaseSlots + BankMath.upgradeLevel(profile, "slots") * BankConfig.Upgrades.slots.perLevel + rebirthSlots
+end
+
+-- tempo máximo de produção acumulada sem o jogador liquidar (offline)
+function BankMath.offlineCap(profile)
+	return BankConfig.MaxOfflineSeconds + BankMath.upgradeLevel(profile, "offline") * BankConfig.Upgrades.offline.perLevel
 end
 
 function BankMath.storageCap(profile)
@@ -76,7 +82,7 @@ function BankMath.totalRate(profile)
 end
 
 -- Liquida a produção desde bank.lastTick até now.
--- Limita o intervalo a MaxOfflineSeconds e o acumulado ao teto do cofre.
+-- Limita o intervalo ao limite offline (BankMath.offlineCap) e o acumulado ao teto do cofre.
 -- Retorna o quanto foi produzido nesta liquidação.
 function BankMath.settle(profile, now)
 	local bank = profile.bank
@@ -85,8 +91,9 @@ function BankMath.settle(profile, now)
 	if dt < 0 then
 		dt = 0 -- relógio voltou: não produz, apenas reancora
 	end
-	if dt > BankConfig.MaxOfflineSeconds then
-		dt = BankConfig.MaxOfflineSeconds
+	local maxDt = BankMath.offlineCap(profile)
+	if dt > maxDt then
+		dt = maxDt
 	end
 	local cap = BankMath.storageCap(profile)
 	local before = bank.pending or 0

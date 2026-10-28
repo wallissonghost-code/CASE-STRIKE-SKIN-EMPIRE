@@ -1,4 +1,4 @@
--- IndexController: catálogo completo (60 skins), coleções, filtros, pesquisa e recompensas de coleção.
+-- CollectionController: catálogo completo (60 skins), coleções, filtros, pesquisa e recompensas de coleção.
 -- Skins não descobertas aparecem como silhuetas.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -15,7 +15,7 @@ local SkinModelFactory = require(Shared.Visual.SkinModelFactory)
 local UI = require(script.Parent.UIController)
 local Net = require(script.Parent.Parent.Util.Net)
 
-local Index = {}
+local Collections = {}
 
 local function silhouette(def)
 	local model = SkinModelFactory.build(def, {})
@@ -30,7 +30,7 @@ local function silhouette(def)
 end
 
 local function build()
-	local p = UI.createPanel("📖 Índice de Coleções", 1120, 640)
+	local p = UI.createPanel("📖 Índice de Coleções", 1120, 640, "Collections")
 	local state = { collection = "all", rarity = "all", search = "", onlyMissing = false }
 
 	local summary = UI.text({ Font = UI.Fonts.bold, TextSize = 15, Size = UDim2.new(1, 0, 0, 20), Parent = p.content })
@@ -96,21 +96,35 @@ local function build()
 				complete = complete + 1
 			end
 		end
-		summary.Text = "Descobertas: " .. found .. " / " .. SkinDefinitions.Count .. "   •   Coleções completas: " .. complete .. " / " .. #CaseDefinitions.List
+		summary.Text = "Descobertas: " .. found .. " / " .. SkinDefinitions.Count .. " (" .. math.floor(found / SkinDefinitions.Count * 100 + 0.5) .. "%)   •   Coleções completas: " .. complete .. " / " .. #CaseDefinitions.List
 
 		UI.clear(cols)
 		for i, c in ipairs(CaseDefinitions.List) do
 			local st = view.collections[c.id]
-			local f = UI.frame({ BackgroundColor3 = UI.Theme.panel2:Lerp(UI.rgb(c.color), 0.2), Size = UDim2.new(1, -8, 0, 92), LayoutOrder = i, Parent = cols })
+			local f = UI.frame({ BackgroundColor3 = UI.Theme.panel2:Lerp(UI.rgb(c.color), 0.2), Size = UDim2.new(1, -8, 0, 112), LayoutOrder = i, Parent = cols })
 			UI.corner(f, 10)
-			UI.text({ Text = c.name, Font = UI.Fonts.bold, TextSize = 15, Size = UDim2.new(1, -20, 0, 20), Position = UDim2.fromOffset(10, 6), Parent = f })
-			UI.text({ Text = st.discovered .. " / " .. st.total .. " descobertas", TextSize = 12, TextColor3 = UI.Theme.muted, Size = UDim2.new(1, -20, 0, 16), Position = UDim2.fromOffset(10, 28), Parent = f })
+			UI.text({ Text = c.collectionName, Font = UI.Fonts.bold, TextSize = 15, Size = UDim2.new(1, -20, 0, 20), Position = UDim2.fromOffset(10, 6), Parent = f })
+			UI.text({ Text = st.discovered .. " / " .. st.total .. " descobertas (" .. math.floor(st.discovered / st.total * 100 + 0.5) .. "%) • " .. c.name, TextSize = 12, TextColor3 = UI.Theme.muted, Size = UDim2.new(1, -20, 0, 16), Position = UDim2.fromOffset(10, 28), Parent = f })
 			local back = UI.frame({ BackgroundColor3 = UI.Theme.bg, Size = UDim2.new(1, -130, 0, 8), Position = UDim2.fromOffset(10, 50), Parent = f })
 			UI.corner(back, 4)
 			local fill = UI.frame({ BackgroundColor3 = UI.rgb(c.trim), Size = UDim2.fromScale(st.discovered / st.total, 1), Parent = back })
 			UI.corner(fill, 4)
 			local reward = ProgressionConfig.CollectionRewards[c.id]
-			UI.text({ Text = "Prêmio: " .. UI.rewardText(reward, Format, CaseDefinitions, EconomyConfig), TextSize = 11, Size = UDim2.new(1, -130, 0, 26), Position = UDim2.fromOffset(10, 62), Parent = f })
+			local titleDef = reward.title and ProgressionConfig.Titles[reward.title]
+			local extras = {}
+			for _, kind in ipairs(ProgressionConfig.CollectionCosmetics) do
+				local owned = view.cosmetics[kind .. "_" .. c.id]
+				table.insert(extras, (owned and "✔ " or "") .. ProgressionConfig.CosmeticNames[kind])
+			end
+			UI.text({
+				Text = "Prêmio: " .. UI.rewardText(reward, Format, CaseDefinitions, EconomyConfig)
+					.. (titleDef and (" • título “" .. titleDef.displayName .. "”") or "")
+					.. "\n" .. table.concat(extras, " • "),
+				TextSize = 11,
+				Size = UDim2.new(1, -130, 0, 44),
+				Position = UDim2.fromOffset(10, 62),
+				Parent = f,
+			})
 			local btn = UI.button({
 				Text = st.claimed and "Resgatado" or (st.complete and "Resgatar" or "Incompleta"),
 				TextSize = 13,
@@ -120,7 +134,7 @@ local function build()
 				Size = UDim2.fromOffset(106, 38),
 				Parent = f,
 				onClick = function()
-					UI.handle(Net.call("ProgressionAction", { action = "claimCollection", collectionId = c.id }), "Recompensa da coleção resgatada!")
+					UI.handle(Net.call("ClaimReward", { action = "claimCollection", collectionId = c.id }), "Recompensa da coleção resgatada!")
 				end,
 			})
 			UI.setEnabled(btn, st.complete and not st.claimed, UI.Theme.good)
@@ -151,6 +165,10 @@ local function build()
 				c.name.Text = disc and def.name or "???"
 				c.info.Text = '<font color="#' .. UI.rarityColor(def.rarity):ToHex() .. '">' .. RarityConfig.Rarities[def.rarity].displayName .. "</font> • ₵ " .. Format.short(def.value) .. "\n" .. CaseDefinitions.ById[def.caseId].name
 				c.card.BackgroundColor3 = disc and UI.Theme.panel2 or UI.Theme.bg
+				-- moldura da coleção (cosmético desbloqueado ao resgatar a coleção)
+				local framed = view.cosmetics["frame_" .. def.collection] == true
+				c.stroke.Thickness = framed and 3.5 or 2
+				c.stroke.Color = framed and UI.rgb(CaseDefinitions.ById[def.collection].trim) or UI.rarityColor(def.rarity)
 			end
 		end
 	end
@@ -190,8 +208,8 @@ local function build()
 	}
 end
 
-function Index.init()
-	UI.register("Index", build)
+function Collections.init()
+	UI.register("Collections", build)
 end
 
-return Index
+return Collections

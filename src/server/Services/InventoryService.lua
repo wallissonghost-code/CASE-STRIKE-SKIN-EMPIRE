@@ -124,6 +124,21 @@ function InventoryService.start()
 		end)
 	end)
 
+	Remotes.on("InventoryAction", "showcase", "Inventory", function(player, payload)
+		if not Validate.id(payload.uid, 24) then
+			return Remotes.fail("invalid_request", "Pedido inválido.")
+		end
+		return PlayerDataService.run(player, function(profile, ctx)
+			return ProfileOps.setShowcase(profile, ctx, payload.uid, payload.value == true)
+		end)
+	end)
+
+	Remotes.on("InventoryAction", "setReduceEffects", "Inventory", function(player, payload)
+		return PlayerDataService.run(player, function(profile, ctx)
+			return ProfileOps.setReduceEffects(profile, ctx, payload.value == true)
+		end)
+	end)
+
 	Remotes.on("InventoryAction", "setFastOpen", "Inventory", function(player, payload)
 		return PlayerDataService.run(player, function(profile, ctx)
 			return ProfileOps.setFastOpen(profile, ctx, payload.value == true)

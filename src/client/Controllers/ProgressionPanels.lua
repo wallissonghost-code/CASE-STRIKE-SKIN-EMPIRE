@@ -56,7 +56,7 @@ end
 ---------------------------------------------------------------------------
 
 local function buildMissions()
-	local p = UI.createPanel("📜 Missões e Eventos", 860, 600)
+	local p = UI.createPanel("📜 Missões e Eventos", 860, 600, "Missions")
 	local list = UI.scroll({ Size = UDim2.fromScale(1, 1), Parent = p.content })
 	UI.list(list, 8)
 	return {
@@ -74,7 +74,7 @@ local function buildMissions()
 				UI.text({ Text = view.event.description, TextSize = 13, TextColor3 = UI.Theme.muted, Size = UDim2.new(1, 0, 0, 34), LayoutOrder = nextOrder(), Parent = list })
 				for _, c in ipairs(view.event.challenges) do
 					progressRow(list, nextOrder(), c.description, c.progress, c.target, c.reward, c.claimed, function()
-						UI.handle(Net.call("ProgressionAction", { action = "claimEventChallenge", challengeId = c.id }), "Desafio concluído!")
+						UI.handle(Net.call("ClaimReward", { action = "claimEventChallenge", challengeId = c.id }), "Desafio concluído!")
 					end)
 				end
 			elseif view.nextEvent then
@@ -86,13 +86,13 @@ local function buildMissions()
 			section(list, "Diárias — renovam em " .. Format.duration(view.daily.secondsUntilReset - (now - view.serverTime)), nextOrder())
 			for _, m in ipairs(view.missions.daily) do
 				progressRow(list, nextOrder(), m.description, m.progress, m.target, m.reward, m.claimed, function()
-					UI.handle(Net.call("ProgressionAction", { action = "claimMission", missionId = m.id }), "Missão concluída!")
+					UI.handle(Net.call("ClaimReward", { action = "claimMission", missionId = m.id }), "Missão concluída!")
 				end)
 			end
 			section(list, "Semanais", nextOrder())
 			for _, m in ipairs(view.missions.weekly) do
 				progressRow(list, nextOrder(), m.description, m.progress, m.target, m.reward, m.claimed, function()
-					UI.handle(Net.call("ProgressionAction", { action = "claimMission", missionId = m.id }), "Missão concluída!")
+					UI.handle(Net.call("ClaimReward", { action = "claimMission", missionId = m.id }), "Missão concluída!")
 				end)
 			end
 		end,
@@ -104,7 +104,7 @@ end
 ---------------------------------------------------------------------------
 
 local function buildGifts()
-	local p = UI.createPanel("🎁 Presentes", 900, 600)
+	local p = UI.createPanel("🎁 Presentes", 900, 600, "Rewards")
 	local list = UI.scroll({ Size = UDim2.fromScale(1, 1), Parent = p.content })
 	UI.list(list, 8)
 	return {
@@ -135,7 +135,7 @@ local function buildGifts()
 				LayoutOrder = nextOrder(),
 				Parent = list,
 				onClick = function()
-					UI.handle(Net.call("ProgressionAction", { action = "claimDaily" }), "Presente diário resgatado!")
+					UI.handle(Net.call("ClaimReward", { action = "claimDaily" }), "Presente diário resgatado!")
 				end,
 			})
 			UI.setEnabled(dailyBtn, view.daily.available, UI.Theme.good)
@@ -144,7 +144,7 @@ local function buildGifts()
 			section(list, "Recompensas de nível", nextOrder())
 			for _, lr in ipairs(view.levelRewards) do
 				progressRow(list, nextOrder(), "Alcançar o nível " .. lr.level, math.min(view.level, lr.level), lr.level, ProgressionConfig.LevelRewards[lr.level], lr.claimed, function()
-					UI.handle(Net.call("ProgressionAction", { action = "claimLevelReward", level = lr.level }), "Recompensa de nível resgatada!")
+					UI.handle(Net.call("ClaimReward", { action = "claimLevelReward", level = lr.level }), "Recompensa de nível resgatada!")
 				end)
 			end
 
@@ -152,7 +152,7 @@ local function buildGifts()
 			for _, a in ipairs(view.achievements) do
 				local def = AchievementDefinitions.ById[a.id]
 				progressRow(list, nextOrder(), def.name .. " — " .. def.description, a.unlocked and def.target or a.progress, def.target, def.reward, a.claimed, function()
-					UI.handle(Net.call("ProgressionAction", { action = "claimAchievement", achievementId = a.id }), "Conquista resgatada!")
+					UI.handle(Net.call("ClaimReward", { action = "claimAchievement", achievementId = a.id }), "Conquista resgatada!")
 				end)
 			end
 		end,
@@ -226,56 +226,119 @@ end
 ---------------------------------------------------------------------------
 
 local function buildAttributes()
-	local p = UI.createPanel("📊 Atributos do Colecionador", 860, 580)
-	local left = UI.scroll({ Size = UDim2.new(0.5, -8, 1, 0), Parent = p.content })
-	UI.list(left, 6)
-	local right = UI.scroll({ Size = UDim2.new(0.5, -8, 1, 0), Position = UDim2.new(0.5, 8, 0, 0), Parent = p.content })
+	local p = UI.createPanel("📊 Atributos do Colecionador", 1000, 620, "Attributes")
+	local left = UI.scroll({ Size = UDim2.new(0.56, -8, 1, 0), Parent = p.content })
+	UI.list(left, 8)
+	local right = UI.scroll({ Size = UDim2.new(0.44, -8, 1, 0), Position = UDim2.new(0.56, 8, 0, 0), Parent = p.content })
 	UI.list(right, 6)
 	return {
 		frame = p.frame,
 		refresh = function(view)
 			UI.clear(left)
 			UI.clear(right)
+			section(left, "Atributos", 0)
+			for i, a in ipairs(view.attributes) do
+				local f = UI.frame({ BackgroundColor3 = UI.Theme.panel2, Size = UDim2.new(1, -8, 0, 96), LayoutOrder = i, Parent = left })
+				UI.corner(f, 10)
+				UI.text({ Text = a.displayName .. "  <font color='#A5AABE'>nível " .. a.level .. "/" .. a.maxLevel .. "</font>", Font = UI.Fonts.bold, TextSize = 15, Size = UDim2.new(1, -140, 0, 20), Position = UDim2.fromOffset(12, 6), Parent = f })
+				UI.text({ Text = a.description, TextSize = 12, TextColor3 = UI.Theme.muted, Size = UDim2.new(1, -140, 0, 30), Position = UDim2.fromOffset(12, 26), Parent = f })
+				local benefit = "Atual: " .. a.benefit .. (a.nextBenefit and ("  →  próximo: " .. a.nextBenefit) or "  (máximo)")
+				UI.text({ Text = benefit, TextSize = 12, TextColor3 = UI.Theme.good, Size = UDim2.new(1, -140, 0, 18), Position = UDim2.fromOffset(12, 56), Parent = f })
+				local maxed = a.level >= a.maxLevel
+				local lockedLevel = (not maxed) and view.level < (a.requiredLevel or 0)
+				UI.text({
+					Text = maxed and "Limite máximo atingido" or ("Custo: ₵ " .. Format.int(a.cost) .. (lockedLevel and ("  • requer nível " .. a.requiredLevel) or "") .. (a.linked and "  • mesma melhoria do Banco" or "")),
+					TextSize = 12,
+					Font = UI.Fonts.bold,
+					TextColor3 = lockedLevel and UI.Theme.bad or UI.Theme.accent,
+					Size = UDim2.new(1, -140, 0, 18),
+					Position = UDim2.fromOffset(12, 74),
+					Parent = f,
+				})
+				local btn = UI.button({
+					Text = maxed and "✔ Máximo" or "Melhorar",
+					color = UI.Theme.blue,
+					AnchorPoint = Vector2.new(1, 0.5),
+					Position = UDim2.new(1, -10, 0.5, 0),
+					Size = UDim2.fromOffset(116, 42),
+					Parent = f,
+					onClick = function()
+						UI.handle(Net.call("ProgressionAction", { action = "buyAttribute", attributeId = a.id }), a.displayName .. " melhorado!")
+					end,
+				})
+				UI.setEnabled(btn, (not maxed) and (not lockedLevel) and view.credits >= (a.cost or math.huge), UI.Theme.blue)
+			end
+
+			-- estatísticas
 			local found = 0
 			for _ in pairs(view.discovered) do
 				found = found + 1
 			end
-			local s = view.stats
+			local st = view.stats
+			section(right, "Estatísticas", 1)
 			local rows = {
 				{ "Patrimônio líquido", "₵ " .. Format.int(view.wealth.netWorth) },
-				{ "Saldo disponível", "₵ " .. Format.int(view.credits) },
-				{ "Valor no inventário", "₵ " .. Format.int(view.wealth.inventoryValue) },
-				{ "Valor no banco", "₵ " .. Format.int(view.wealth.bankValue) },
+				{ "Saldo / pendente no banco", "₵ " .. Format.int(view.credits) .. " / ₵ " .. Format.int(view.wealth.pending or 0) },
 				{ "Valor dos equipamentos", "₵ " .. Format.int(view.wealth.equipValue) },
 				{ "Renda do banco", Format.rate(view.bank.rate) },
-				{ "Nível", view.level .. (view.rebirths > 0 and (" • " .. view.rebirths .. " renascimento(s)") or "") },
+				{ "Nível", view.level .. (view.rebirths > 0 and (" • ♻️" .. view.rebirths) or "") },
 				{ "Skins possuídas", #view.items .. " / " .. view.inventoryCapacity },
 				{ "Skins descobertas", found .. " / 60" },
-				{ "Caixas abertas", Format.int(s.casesOpened) },
-				{ "Créditos gastos em caixas", "₵ " .. Format.int(s.creditsSpentOnCases) },
-				{ "Skins vendidas", Format.int(s.skinsSold) .. " (₵ " .. Format.int(s.creditsFromSales) .. ")" },
-				{ "Resgatado do banco", "₵ " .. Format.int(s.bankClaimedTotal) },
-				{ "Melhorias feitas", Format.int(s.upgradesDone) },
-				{ "Melhor drop", "₵ " .. Format.int(s.bestDropValue) },
-				{ "Vagas de exibição", tostring(view.equipSlots) },
+				{ "Caixas abertas", Format.int(st.casesOpened) },
+				{ "Skins vendidas", Format.int(st.skinsSold) },
+				{ "Melhorias feitas", Format.int(st.upgradesDone) },
+				{ "Melhor drop", "₵ " .. Format.int(st.bestDropValue) },
 			}
 			for i, r in ipairs(rows) do
-				local f = UI.frame({ BackgroundColor3 = UI.Theme.panel2, Size = UDim2.new(1, -8, 0, 32), LayoutOrder = i, Parent = left })
+				local f = UI.frame({ BackgroundColor3 = UI.Theme.panel2, Size = UDim2.new(1, -8, 0, 30), LayoutOrder = 1 + i, Parent = right })
 				UI.corner(f, 8)
-				UI.text({ Text = r[1], TextSize = 13, TextColor3 = UI.Theme.muted, Size = UDim2.new(0.55, 0, 1, 0), Position = UDim2.fromOffset(10, 0), Parent = f })
-				UI.text({ Text = r[2], TextSize = 14, Font = UI.Fonts.bold, TextXAlignment = Enum.TextXAlignment.Right, Size = UDim2.new(0.45, -20, 1, 0), Position = UDim2.new(0.55, 0, 0, 0), Parent = f })
+				UI.text({ Text = r[1], TextSize = 12, TextColor3 = UI.Theme.muted, Size = UDim2.new(0.55, 0, 1, 0), Position = UDim2.fromOffset(10, 0), Parent = f })
+				UI.text({ Text = r[2], TextSize = 13, Font = UI.Fonts.bold, TextXAlignment = Enum.TextXAlignment.Right, Size = UDim2.new(0.45, -20, 1, 0), Position = UDim2.new(0.55, 0, 0, 0), Parent = f })
 			end
-			section(right, "Títulos", 0)
-			local i = 0
-			for id, t in pairs(ProgressionConfig.Titles) do
-				i = i + 1
-				local owned = view.titles[id] == true
-				local btn = UI.button({
-					Text = (view.equippedTitle == id and "✔ " or "") .. t.displayName .. (owned and "" or "  🔒"),
+
+			-- configurações
+			section(right, "Configurações", 40)
+			local function toggle(order, label, on, action)
+				local b = UI.button({
+					Text = label .. ": " .. (on and "LIGADO" or "desligado"),
 					TextSize = 14,
-					color = view.equippedTitle == id and UI.Theme.accent or UI.Theme.panel2,
+					color = on and UI.Theme.good or UI.Theme.panel2,
 					Size = UDim2.new(1, -8, 0, 38),
-					LayoutOrder = i,
+					LayoutOrder = order,
+					Parent = right,
+					onClick = function()
+						UI.handle(Net.call("InventoryAction", { action = action, value = not on }))
+					end,
+				})
+				return b
+			end
+			toggle(41, "⚡ Abertura rápida", view.settings.fastOpen == true, "setFastOpen")
+			toggle(42, "🌙 Reduzir efeitos visuais", view.settings.reduceEffects == true, "setReduceEffects")
+
+			-- títulos
+			section(right, "Títulos", 60)
+			local ids = {}
+			for id in pairs(ProgressionConfig.Titles) do
+				table.insert(ids, id)
+			end
+			table.sort(ids, function(a, b)
+				local la = ProgressionConfig.Titles[a].level or 1000
+				local lb = ProgressionConfig.Titles[b].level or 1000
+				if la ~= lb then
+					return la < lb
+				end
+				return a < b
+			end)
+			for i, id in ipairs(ids) do
+				local t = ProgressionConfig.Titles[id]
+				local owned = view.titles[id] == true
+				local hint = t.level and (" (nível " .. t.level .. ")") or ""
+				local btn = UI.button({
+					Text = (view.equippedTitle == id and "✔ " or "") .. t.displayName .. (owned and "" or ("  🔒" .. hint)),
+					TextSize = 13,
+					color = view.equippedTitle == id and UI.Theme.accent or UI.Theme.panel2,
+					Size = UDim2.new(1, -8, 0, 34),
+					LayoutOrder = 60 + i,
 					Parent = right,
 					onClick = function()
 						UI.handle(Net.call("ProgressionAction", { action = "setTitle", titleId = id }))
@@ -314,7 +377,7 @@ local function buildRebirth()
 			UI.corner(keep, 10)
 			UI.padding(keep, 12)
 			UI.text({
-				Text = "<b>SERÁ MANTIDO</b>\n• " .. r.keepItems.count .. " skin(s) Épicas ou superiores e todas as favoritas (₵ " .. Format.int(r.keepItems.value) .. ")\n• Índice de descobertas, coleções concluídas e recompensas resgatadas\n• Conquistas, títulos e materiais\n• Missões em andamento",
+				Text = "<b>SERÁ MANTIDO</b>\n• " .. r.keepItems.count .. " skin(s) Raras ou superiores e todas as favoritas (₵ " .. Format.int(r.keepItems.value) .. ") — nada raro é apagado\n• Índice, coleções concluídas, cosméticos e recompensas resgatadas\n• Conquistas, títulos, materiais, caixas grátis e atributos\n• Missões em andamento",
 				TextSize = 14,
 				AutomaticSize = Enum.AutomaticSize.Y,
 				Size = UDim2.new(1, 0, 0, 0),
@@ -324,14 +387,14 @@ local function buildRebirth()
 			UI.corner(lose, 10)
 			UI.padding(lose, 12)
 			UI.text({
-				Text = "<b>SERÁ REINICIADO</b>\n• " .. r.loseItems.count .. " skin(s) abaixo de Épica não favoritadas (₵ " .. Format.int(r.loseItems.value) .. ")\n• Saldo de ₵ " .. Format.int(r.creditsLost) .. " volta para ₵ " .. Format.int(r.creditsAfter) .. "\n• Créditos pendentes do banco (₵ " .. Format.int(r.pendingBankLost) .. ") e melhorias do banco\n• Nível e XP voltam ao nível 1",
+				Text = "<b>SERÁ REINICIADO</b>\n• " .. r.loseItems.count .. " skin(s) Comuns/Incomuns não favoritadas (₵ " .. Format.int(r.loseItems.value) .. ")\n• Saldo de ₵ " .. Format.int(r.creditsLost) .. " volta para ₵ " .. Format.int(r.creditsAfter) .. "\n• Créditos pendentes do banco (₵ " .. Format.int(r.pendingBankLost) .. ") e melhorias do banco\n• Nível e XP voltam ao nível 1",
 				TextSize = 14,
 				AutomaticSize = Enum.AutomaticSize.Y,
 				Size = UDim2.new(1, 0, 0, 0),
 				Parent = lose,
 			})
 			UI.text({
-				Text = "<b>Benefícios permanentes após renascer:</b> +" .. Format.percent(r.bankEfficiencyAfter, 0) .. " de renda no banco, +" .. Format.percent(r.luckAfter, 0) .. " de sorte, +" .. r.equipSlotBonusAfter .. " vaga(s) de exibição extra e títulos exclusivos.",
+				Text = "<b>Benefícios permanentes após renascer:</b> +" .. Format.percent(r.bankEfficiencyAfter, 0) .. " de renda no banco, +" .. Format.percent(r.luckAfter, 0) .. " de sorte, +" .. Format.percent(r.xpBonusAfter, 0) .. " de XP, +" .. r.bankSlotBonusAfter .. " vaga(s) de banco, +" .. r.equipSlotBonusAfter .. " vaga(s) de exibição e títulos exclusivos.",
 				TextSize = 14,
 				TextColor3 = UI.Theme.accent,
 				AutomaticSize = Enum.AutomaticSize.Y,

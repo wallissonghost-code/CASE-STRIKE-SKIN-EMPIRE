@@ -225,6 +225,7 @@ local function fitCamera(viewport, model, zoom)
 	local radius = size.Magnitude / 2
 	local dist = radius / math.tan(math.rad(cam.FieldOfView / 2)) * (zoom or 1.05)
 	cam.CFrame = CFrame.lookAt(cf.Position + Vector3.new(0, radius * 0.15, dist), cf.Position)
+	return cf.Position, radius
 end
 
 local function isShown(gui)
@@ -250,7 +251,64 @@ function UI.viewport(model, size, opts)
 	})
 	model:PivotTo(CFrame.new(0, 0, 0) * (opts.baseRotation or CFrame.Angles(0, 0, 0)))
 	model.Parent = vp
-	fitCamera(vp, model, opts.zoom)
+	local center, radius = fitCamera(vp, model, opts.zoom)
+	if opts.interactive then
+		-- inspeção: arrastar gira a arma; roda do mouse/pinça ou botões aproximam e afastam
+		local state = { yaw = 0, pitch = 0, zoom = opts.zoom or 1.05, dragging = false, last = nil, auto = true }
+		local base = model:GetPivot()
+		local function apply()
+			model:PivotTo(base * CFrame.Angles(state.pitch, state.yaw, 0))
+			local cam = vp.CurrentCamera
+			local dist = radius / math.tan(math.rad(cam.FieldOfView / 2)) * state.zoom
+			cam.CFrame = CFrame.lookAt(center + Vector3.new(0, radius * 0.15 * state.zoom, dist), center)
+		end
+		vp.Active = true
+		vp.InputBegan:Connect(function(input)
+			local t = input.UserInputType
+			if t == Enum.UserInputType.MouseButton1 or t == Enum.UserInputType.Touch then
+				state.dragging = true
+				state.auto = false
+				state.last = input.Position
+			end
+		end)
+		vp.InputEnded:Connect(function(input)
+			local t = input.UserInputType
+			if t == Enum.UserInputType.MouseButton1 or t == Enum.UserInputType.Touch then
+				state.dragging = false
+			end
+		end)
+		vp.InputChanged:Connect(function(input)
+			local t = input.UserInputType
+			if state.dragging and (t == Enum.UserInputType.MouseMovement or t == Enum.UserInputType.Touch) and state.last then
+				local d = input.Position - state.last
+				state.last = input.Position
+				state.yaw = state.yaw + d.X * 0.012
+				state.pitch = math.clamp(state.pitch + d.Y * 0.008, -1.1, 1.1)
+				apply()
+			elseif t == Enum.UserInputType.MouseWheel then
+				state.zoom = math.clamp(state.zoom - input.Position.Z * 0.08, 0.45, 2.2)
+				apply()
+			end
+		end)
+		local controller = {
+			zoomBy = function(delta)
+				state.zoom = math.clamp(state.zoom + delta, 0.45, 2.2)
+				apply()
+			end,
+			reset = function()
+				state.yaw, state.pitch, state.zoom, state.auto = 0, 0, opts.zoom or 1.05, true
+				apply()
+			end,
+		}
+		-- giro automático (com balanço extra se a skin tiver a "Animação de inspeção") até o jogador tocar
+		spinning[vp] = { model = model, speed = opts.inspect and 1.4 or 0.6, wobble = opts.inspect, t = 0, base = base, until_ = function()
+			return state.auto
+		end }
+		vp.Destroying:Connect(function()
+			spinning[vp] = nil
+		end)
+		return vp, controller
+	end
 	if opts.spin then
 		spinning[vp] = { model = model, speed = opts.inspect and 1.4 or 0.6, wobble = opts.inspect, t = 0, base = model:GetPivot() }
 		vp.Destroying:Connect(function()
@@ -274,7 +332,9 @@ end
 
 RunService.RenderStepped:Connect(function(dt)
 	for vp, s in pairs(spinning) do
-		if vp.Parent and isShown(vp) then
+		if s.until_ and not s.until_() then
+			-- inspeção manual: o jogador assumiu o controle
+		elseif vp.Parent and isShown(vp) then
 			s.t = s.t + dt
 			local rot = CFrame.Angles(0, s.t * s.speed, 0)
 			if s.wobble then
@@ -291,44 +351,87 @@ end)
 -- raiz, escala e camadas
 ---------------------------------------------------------------------------
 
-local screen, root, uiScale
+-- Cada interface principal é uma ScreenGui própria (MainHUD, CaseShop, CaseOpening, Inventory,
+-- Bank, UpgradeWorkshop, Collections, Missions, Rewards, Rankings...), todas com a mesma escala
+-- responsiva: o layout é feito em 1280×720 e uma UIScale ajusta para PC, tablet e celular.
+local screens = {} -- [nome] = { gui, root, scale }
 UI.layers = {}
+UI.scale = 1
 
-local function updateScale()
+local function scaleValue()
 	local cam = workspace.CurrentCamera
 	local vs = cam and cam.ViewportSize or Vector2.new(1280, 720)
 	local s = math.min(vs.X / UI.DesignSize.X, vs.Y / UI.DesignSize.Y)
-	s = math.clamp(s, 0.42, 1.35)
-	uiScale.Scale = s
-	root.Size = UDim2.fromScale(1 / s, 1 / s)
-	UI.scale = s
 	UI.isCompact = vs.X < 900 or vs.Y < 500
+	return math.clamp(s, 0.42, 1.35)
 end
 
-function UI.init()
-	screen = UI.make("ScreenGui", {
-		Name = "CaseStrikeUI",
+local function applyScale(entry, s)
+	entry.scale.Scale = s
+	entry.root.Size = UDim2.fromScale(1 / s, 1 / s)
+end
+
+local function updateScale()
+	local s = scaleValue()
+	UI.scale = s
+	for _, entry in pairs(screens) do
+		applyScale(entry, s)
+	end
+end
+
+-- retorna a raiz (já escalada) da ScreenGui com esse nome, criando-a se necessário
+function UI.screen(name, displayOrder)
+	local entry = screens[name]
+	if entry then
+		return entry.root
+	end
+	local gui = UI.make("ScreenGui", {
+		Name = name,
 		ResetOnSpawn = false,
 		IgnoreGuiInset = false,
+		DisplayOrder = displayOrder or 10,
 		ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 		Parent = player:WaitForChild("PlayerGui"),
 	})
-	root = UI.make("Frame", { Name = "Root", BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Parent = screen })
-	uiScale = UI.make("UIScale", { Parent = root })
-	updateScale()
+	local root = UI.make("Frame", { Name = "Root", BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Parent = gui })
+	local scale = UI.make("UIScale", { Parent = root })
+	entry = { gui = gui, root = root, scale = scale }
+	screens[name] = entry
+	applyScale(entry, UI.scale)
+	return root
+end
+
+function UI.init()
+	UI.scale = scaleValue()
+	UI.layers.HUD = UI.screen("MainHUD", 1)
+	UI.layers.Panels = UI.screen("Panels", 10)
+	UI.layers.Overlay = UI.screen("CaseOpening", 20)
+	UI.layers.Modal = UI.screen("Dialogs", 30)
+	UI.layers.Toast = UI.screen("Toasts", 40)
 	workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale)
 
-	for i, name in ipairs({ "HUD", "Panels", "Overlay", "Modal", "Toast" }) do
-		UI.layers[name] = UI.make("Frame", {
-			Name = name,
-			BackgroundTransparency = 1,
-			Size = UDim2.fromScale(1, 1),
-			ZIndex = i * 10,
-			Parent = root,
-		})
+	-- indicador de carregamento enquanto há pedidos ao servidor
+	UI.loadingLabel = UI.text({
+		Name = "Loading",
+		Text = "⏳ Carregando...",
+		Font = UI.Fonts.bold,
+		TextSize = 14,
+		TextXAlignment = Enum.TextXAlignment.Center,
+		BackgroundTransparency = 0.15,
+		BackgroundColor3 = UI.Theme.panel,
+		AnchorPoint = Vector2.new(1, 1),
+		Position = UDim2.new(1, -14, 1, -100),
+		Size = UDim2.fromOffset(150, 30),
+		Visible = false,
+		Parent = UI.layers.Toast,
+	})
+	UI.corner(UI.loadingLabel, 8)
+end
+
+function UI.setLoading(on)
+	if UI.loadingLabel then
+		UI.loadingLabel.Visible = on
 	end
-	UI.root = root
-	UI.screen = screen
 end
 
 ---------------------------------------------------------------------------
@@ -337,10 +440,20 @@ end
 
 local panels = {} -- [name] = { build = fn, instance = table }
 UI.current = nil
-UI.panelChanged = nil -- definido em init de controladores
+UI.panelListeners = {} -- funções chamadas com (nomeDoPainel ou nil) quando o painel aberto muda
+
+function UI.onPanelChanged(fn)
+	table.insert(UI.panelListeners, fn)
+end
+
+local function notifyPanel()
+	for _, fn in ipairs(UI.panelListeners) do
+		task.spawn(fn, UI.current)
+	end
+end
 
 -- cria a moldura padrão de painel
-function UI.createPanel(title, width, height)
+function UI.createPanel(title, width, height, guiName)
 	local frame = UI.frame({
 		Name = "Panel",
 		AnchorPoint = Vector2.new(0.5, 0.5),
@@ -349,7 +462,7 @@ function UI.createPanel(title, width, height)
 		BackgroundColor3 = UI.Theme.panel,
 		BackgroundTransparency = 0.08,
 		Visible = false,
-		Parent = UI.layers.Panels,
+		Parent = guiName and UI.screen(guiName, 10) or UI.layers.Panels,
 	})
 	UI.corner(frame, 16)
 	UI.stroke(frame, UI.Theme.stroke, 2, 0.8)
@@ -408,34 +521,52 @@ function UI.open(name, args)
 		return
 	end
 	if UI.current and UI.current ~= name then
-		UI.close()
+		UI.close(true)
 	end
+	local wasOpen = UI.current == name
 	UI.current = name
 	inst.frame.Visible = true
-	inst.frame.Size = inst.frame.Size -- força layout
 	local scale = inst.frame:FindFirstChild("PopScale") or UI.make("UIScale", { Name = "PopScale", Parent = inst.frame })
-	scale.Scale = 0.92
-	TweenService:Create(scale, TweenInfo.new(0.16, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = 1 }):Play()
+	if not wasOpen then
+		scale.Scale = 0.92
+		TweenService:Create(scale, TweenInfo.new(0.16, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = 1 }):Play()
+	end
 	if inst.onOpen then
 		inst.onOpen(args)
 	end
 	if inst.refresh and UI.store and UI.store.view then
 		inst.refresh(UI.store.view)
 	end
+	if not wasOpen then
+		notifyPanel()
+	end
 end
 
-function UI.close()
+-- fecha o painel aberto; com immediate = true não anima (troca direta entre painéis)
+function UI.close(immediate)
 	if not UI.current then
 		return
 	end
-	local inst = panels[UI.current] and panels[UI.current].instance
+	local name = UI.current
+	local inst = panels[name] and panels[name].instance
 	UI.current = nil
 	if inst then
-		inst.frame.Visible = false
 		if inst.onClose then
 			inst.onClose()
 		end
+		local scale = inst.frame:FindFirstChild("PopScale")
+		if immediate or not scale then
+			inst.frame.Visible = false
+		else
+			TweenService:Create(scale, TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.In), { Scale = 0.9 }):Play()
+			task.delay(0.1, function()
+				if UI.current ~= name then
+					inst.frame.Visible = false
+				end
+			end)
+		end
 	end
+	notifyPanel()
 end
 
 function UI.toggle(name, args)

@@ -13,8 +13,9 @@ BankConfig.MaxIncomePerSkin = 12 -- créditos/s
 BankConfig.MinIncomePerSkin = 0.001
 
 BankConfig.BaseSlots = 3
+BankConfig.MaxSlotsShown = 15 -- vagas exibidas na tela (as não compradas aparecem bloqueadas)
 BankConfig.BaseStorage = 1500 -- créditos acumulados máximos antes do resgate
-BankConfig.MaxOfflineSeconds = 8 * 3600 -- produção offline máxima: 8 horas
+BankConfig.MaxOfflineSeconds = 8 * 3600 -- produção offline máxima base: 8 horas (melhoria "offline" aumenta)
 
 -- Melhorias com preços progressivos e limites definidos.
 -- cost(level) = baseCost * growth ^ level (level = nível atual, começando em 0)
@@ -55,6 +56,18 @@ BankConfig.Upgrades = {
 			return 1 + level * 2
 		end,
 	},
+	offline = {
+		id = "offline",
+		displayName = "Limite offline",
+		description = "+2 h de produção enquanto você está fora",
+		baseCost = 900,
+		growth = 2.4,
+		maxLevel = 8, -- 8 h -> 24 h
+		perLevel = 2 * 3600,
+		requiredLevel = function(level)
+			return 2 + level * 3
+		end,
+	},
 	display = {
 		id = "display",
 		displayName = "Espaço de exposição",
@@ -69,6 +82,6 @@ BankConfig.Upgrades = {
 	},
 }
 
-BankConfig.UpgradeOrder = { "slots", "efficiency", "storage", "display" }
+BankConfig.UpgradeOrder = { "slots", "efficiency", "storage", "offline", "display" }
 
 return BankConfig

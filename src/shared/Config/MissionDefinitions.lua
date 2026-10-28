@@ -60,6 +60,13 @@ MissionDefinitions.Daily = {
 		reward = { xp = 60, materials = { scrap = 6, pigment = 1 } },
 	},
 	{
+		id = "d_levelup1",
+		description = "Suba 1 nível de colecionador",
+		event = "levelUp",
+		target = 1,
+		reward = { credits = 150, materials = { scrap = 4 } },
+	},
+	{
 		id = "d_equip1",
 		description = "Equipe uma skin para exibição",
 		event = "equip",
@@ -103,6 +110,20 @@ MissionDefinitions.Weekly = {
 		event = "discoverFeatured",
 		target = 3,
 		reward = { xp = 450, luck = "luck_mission" },
+	},
+	{
+		id = "w_collection1",
+		description = "Complete uma coleção do Índice",
+		event = "collectionComplete",
+		target = 1,
+		reward = { credits = 2000, xp = 600, materials = { core = 2 } },
+	},
+	{
+		id = "w_level3",
+		description = "Suba 3 níveis de colecionador",
+		event = "levelUp",
+		target = 3,
+		reward = { credits = 1000, freeCases = { neon = 1 } },
 	},
 	{
 		id = "w_sell25",

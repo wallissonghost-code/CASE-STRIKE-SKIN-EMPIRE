@@ -25,7 +25,7 @@ local LEFT_MENU = {
 }
 local RIGHT_MENU = {
 	{ id = "Gifts", icon = "🎁", label = "Presentes" },
-	{ id = "Index", icon = "📖", label = "Índice" },
+	{ id = "Collections", icon = "📖", label = "Índice" },
 	{ id = "Luck", icon = "🍀", label = "Sorte" },
 	{ id = "Missions", icon = "📜", label = "Missões" },
 	{ id = "Attributes", icon = "📊", label = "Atributos" },
@@ -167,14 +167,15 @@ function HUD.init()
 	end
 
 	-- inferior esquerdo: economia
-	local econ = UI.frame({ BackgroundTransparency = 1, AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 14, 1, -14), Size = UDim2.fromOffset(200, 190), Parent = layer })
-	UI.list(econ, 6)
-	refs.netWorth = statBox(econ, "PATRIMÔNIO LÍQUIDO", UI.Theme.accent, 1)
-	refs.equipValue = statBox(econ, "VALOR DOS EQUIPAMENTOS", UI.Theme.purple, 2)
-	refs.credits = statBox(econ, "SALDO DISPONÍVEL", UI.Theme.good, 3)
+	local econ = UI.frame({ BackgroundTransparency = 1, AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 14, 1, -14), Size = UDim2.fromOffset(410, 116), Parent = layer })
+	UI.make("UIGridLayout", { CellSize = UDim2.fromOffset(200, 54), CellPadding = UDim2.fromOffset(8, 8), SortOrder = Enum.SortOrder.LayoutOrder, Parent = econ })
+	refs.credits = statBox(econ, "SALDO DISPONÍVEL", UI.Theme.good, 1)
+	refs.netWorth = statBox(econ, "PATRIMÔNIO LÍQUIDO", UI.Theme.accent, 2)
+	refs.equipValue = statBox(econ, "VALOR DOS EQUIPAMENTOS", UI.Theme.purple, 3)
+	refs.income = statBox(econ, "RENDA POR SEGUNDO", UI.Theme.blue, 4)
 
 	-- inferior central: barra de XP
-	local xpBack = UI.frame({ AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -16), Size = UDim2.fromOffset(520, 30), BackgroundColor3 = UI.Theme.bg, BackgroundTransparency = 0.25, Parent = layer })
+	local xpBack = UI.frame({ AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -16), Size = UDim2.fromOffset(420, 30), BackgroundColor3 = UI.Theme.bg, BackgroundTransparency = 0.25, Parent = layer })
 	UI.corner(xpBack, 15)
 	UI.stroke(xpBack, UI.Theme.blue, 2, 0.3)
 	refs.xpFill = UI.frame({ Size = UDim2.fromScale(0, 1), BackgroundColor3 = UI.Theme.blue, Parent = xpBack })
@@ -197,6 +198,14 @@ function HUD.init()
 	})
 	UI.stroke(caseBtn, Color3.new(1, 1, 1), 3, 0.2)
 	refs.caseBtn = caseBtn
+
+	-- ao abrir um painel, esconde os elementos secundários do HUD para evitar sobreposição
+	refs.secondary = { left, right, econ, caseBtn, ev }
+	UI.onPanelChanged(function(current)
+		for _, g in ipairs(refs.secondary) do
+			g.Visible = current == nil
+		end
+	end)
 	task.spawn(function()
 		local grad = UI.make("UIGradient", {
 			Color = ColorSequence.new(Color3.fromRGB(255, 205, 80), Color3.fromRGB(255, 120, 40)),
@@ -230,6 +239,7 @@ function HUD.refresh(view)
 	refs.netWorth.Text = "₵ " .. Format.short(view.wealth.netWorth)
 	refs.equipValue.Text = "₵ " .. Format.short(view.wealth.equipValue)
 	refs.credits.Text = "₵ " .. Format.short(view.credits)
+	refs.income.Text = Format.rate(view.bank.rate)
 	local frac = view.level >= view.maxLevel and 1 or math.clamp(view.xp / math.max(1, view.xpNeeded), 0, 1)
 	TweenService:Create(refs.xpFill, TweenInfo.new(0.35), { Size = UDim2.fromScale(math.max(frac, 0.02), 1) }):Play()
 	if view.level >= view.maxLevel then
@@ -266,7 +276,7 @@ function HUD.refresh(view)
 			colReady = true
 		end
 	end
-	refs.badge_Index.Visible = colReady
+	refs.badge_Collections.Visible = colReady
 	refs.badge_Bank.Visible = view.bank.pending >= view.bank.storageCap * 0.999 and view.bank.rate > 0
 	refs.badge_Rebirth.Visible = view.rebirth.canRebirth
 	HUD.tick()
@@ -280,7 +290,8 @@ function HUD.tick()
 	local now = Store.serverNow()
 	if view.event then
 		refs.eventTitle.Text = "🎉 " .. view.event.name
-		refs.eventSub.Text = "Termina em " .. Format.duration(view.event.endsAt - now) .. " • toque para ver os desafios"
+		local nextTxt = view.nextEvent and (" • depois: " .. view.nextEvent.name) or ""
+		refs.eventSub.Text = "Termina em " .. Format.duration(view.event.endsAt - now) .. nextTxt
 	else
 		local done, total = 0, 0
 		for _, m in ipairs(view.missions.daily) do

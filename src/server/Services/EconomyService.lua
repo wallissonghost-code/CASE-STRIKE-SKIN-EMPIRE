@@ -7,6 +7,7 @@ local Shared = ReplicatedStorage.Shared
 local ProfileOps = require(Shared.Logic.ProfileOps)
 local SkinDefinitions = require(Shared.Config.SkinDefinitions)
 local RarityConfig = require(Shared.Config.RarityConfig)
+local EconomyConfig = require(Shared.Config.EconomyConfig)
 
 local Remotes = require(script.Parent.Parent.Core.Remotes)
 local Validate = require(script.Parent.Parent.Core.Validate)
@@ -23,13 +24,14 @@ function EconomyService.start()
 			return Remotes.fail("invalid_request", "Pedido inválido.")
 		end
 		return PlayerDataService.run(player, function(profile, ctx)
-			return ProfileOps.sellItems(profile, ctx, payload.uids, payload.confirmFavorites == true)
+			return ProfileOps.sellItems(profile, ctx, payload.uids, payload.confirmFavorites == true, payload.confirmValuable == true)
 		end, { important = true })
 	end)
 
-	-- vender todas as skins até uma raridade (nunca inclui favoritas, equipadas ou depositadas)
+	-- vender todas as skins até uma raridade (nunca inclui favoritas, equipadas, expostas,
+	-- depositadas nem Lendárias/Secretas, que exigem confirmação individual)
 	Remotes.on("InventoryAction", "sellBulk", "Inventory", function(player, payload)
-		if not Validate.int(payload.maxTier, 1, 6) then
+		if not Validate.int(payload.maxTier, 1, EconomyConfig.ValuableConfirmTier - 1) then
 			return Remotes.fail("invalid_request", "Pedido inválido.")
 		end
 		return PlayerDataService.run(player, function(profile, ctx)
@@ -40,6 +42,7 @@ function EconomyService.start()
 					item.location == "inventory"
 					and not item.favorite
 					and not item.equipped
+					and not item.showcase
 					and RarityConfig.tier(def.rarity) <= payload.maxTier
 				then
 					table.insert(uids, uid)

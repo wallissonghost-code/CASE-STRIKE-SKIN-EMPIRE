@@ -16,7 +16,8 @@ local UpgradeRecipes = require(Shared.Config.UpgradeRecipes)
 local MissionDefinitions = require(Shared.Config.MissionDefinitions)
 local ProgressionConfig = require(Shared.Config.ProgressionConfig)
 local LuckConfig = require(Shared.Config.LuckConfig)
-local EventConfig = require(Shared.Config.EventConfig)
+local EventDefinitions = require(Shared.Config.EventDefinitions)
+local AttributeConfig = require(Shared.Config.AttributeConfig)
 local AchievementDefinitions = require(Shared.Config.AchievementDefinitions)
 local Probability = require(Shared.Logic.Probability)
 local BankMath = require(Shared.Logic.BankMath)
@@ -60,6 +61,11 @@ ProfileOps.Messages = {
 	confirmation_required = "Confirmação inequívoca necessária.",
 	invalid_title = "Título não desbloqueado.",
 	invalid_request = "Pedido inválido.",
+	valuable_locked = "Skin Lendária ou Secreta: confirme explicitamente a venda.",
+	quantity_locked = "Abrir 25 de uma vez exige o atributo Limite de abertura múltipla.",
+	invalid_attribute = "Atributo inválido.",
+	showcase_full = "Todas as vagas do showroom estão ocupadas.",
+	cosmetic_locked = "Complete a coleção para desbloquear este cosmético.",
 }
 
 ---------------------------------------------------------------------------
@@ -122,6 +128,26 @@ local function countEquipped(profile)
 	return n
 end
 
+-- XP central: aplica multiplicador/limites, emite "levelUp" e libera títulos de nível
+local function unlockLevelTitles(profile)
+	for _, id in ipairs(ProgressionConfig.LevelTitleOrder) do
+		local t = ProgressionConfig.Titles[id]
+		if profile.level >= t.level then
+			profile.titles[id] = true
+		end
+	end
+end
+
+local function giveXp(profile, amount, source, now)
+	local got, levels = Progression.addXp(profile, amount, source, now)
+	if levels > 0 then
+		unlockLevelTitles(profile)
+		ProfileOps.emit(profile, now, "levelUp", {}, levels)
+	end
+	return got, levels
+end
+ProfileOps._giveXp = giveXp
+
 local function newItem(profile, defId, now, caseId)
 	local uid = "i" .. tostring(profile.nextUid)
 	profile.nextUid = profile.nextUid + 1
@@ -144,11 +170,11 @@ end
 ---------------------------------------------------------------------------
 
 function ProfileOps.featuredCollection(now)
-	local ev = EventConfig.activeEvent(now)
+	local ev = EventDefinitions.activeEvent(now)
 	if ev then
 		return ev.featuredCollection
 	end
-	local rot = EventConfig.WeeklyFeaturedRotation
+	local rot = EventDefinitions.WeeklyFeaturedRotation
 	return rot[(TimeUtil.weekIndex(now) % #rot) + 1]
 end
 
@@ -180,7 +206,7 @@ function ProfileOps.refreshPeriods(profile, now)
 			m.claimed[id] = nil
 		end
 	end
-	local ev = EventConfig.activeEvent(now)
+	local ev = EventDefinitions.activeEvent(now)
 	local evId = ev and ev.id or ""
 	if profile.eventProgress.eventId ~= evId then
 		profile.eventProgress = { eventId = evId, progress = {}, claimed = {} }
@@ -199,6 +225,17 @@ local function matchesFilter(filter, payload)
 	end
 	if filter.collection and payload.collection ~= filter.collection then
 		return false
+	end
+	if filter.collections then
+		local ok = false
+		for _, c in ipairs(filter.collections) do
+			if c == payload.collection then
+				ok = true
+			end
+		end
+		if not ok then
+			return false
+		end
 	end
 	if filter.caseId and payload.caseId ~= filter.caseId then
 		return false
@@ -222,7 +259,7 @@ function ProfileOps.emit(profile, now, eventName, payload, amount)
 	bump(m.daily)
 	bump(m.weekly)
 
-	local ev = EventConfig.activeEvent(now)
+	local ev = EventDefinitions.activeEvent(now)
 	if ev and profile.eventProgress.eventId == ev.id then
 		local ep = profile.eventProgress
 		for _, c in ipairs(ev.challenges) do
@@ -276,7 +313,18 @@ function ProfileOps.activeLuck(profile, now)
 		})
 	end
 
-	local ev = EventConfig.activeEvent(now)
+	local attrLuck = (profile.attributes and profile.attributes.luck or 0) * AttributeConfig.Attributes.luck.perLevel
+	if attrLuck > 0 then
+		table.insert(list, {
+			id = "luck_attribute",
+			displayName = "Atributo Sorte",
+			source = "Atributos (nível " .. tostring(profile.attributes.luck) .. ")",
+			kind = "permanent",
+			luck = attrLuck,
+		})
+	end
+
+	local ev = EventDefinitions.activeEvent(now)
 	if ev and ev.luckModifier then
 		local def = LuckConfig.Modifiers[ev.luckModifier]
 		if def then
@@ -389,16 +437,24 @@ function ProfileOps.statValue(profile, stat)
 		return profile.level
 	elseif stat == "rebirths" then
 		return profile.rebirths
+	elseif stat == "bankIncome" then
+		return BankMath.totalRate(profile)
 	end
 	return profile.stats[stat] or 0
 end
 
 function ProfileOps.checkAchievements(profile, now)
 	local unlocked = {}
-	for _, a in ipairs(AchievementDefinitions.List) do
-		if not profile.achievements[a.id] and ProfileOps.statValue(profile, a.stat) >= a.target then
-			profile.achievements[a.id] = now
-			table.insert(unlocked, a.id)
+	local changed = true
+	while changed do
+		changed = false
+		for _, a in ipairs(AchievementDefinitions.List) do
+			if not profile.achievements[a.id] and ProfileOps.statValue(profile, a.stat) >= a.target then
+				profile.achievements[a.id] = now
+				table.insert(unlocked, a.id)
+				giveXp(profile, ProgressionConfig.AchievementXp, nil, now) -- pode liberar conquistas de nível
+				changed = true
+			end
 		end
 	end
 	return unlocked
@@ -416,7 +472,7 @@ function ProfileOps.grantReward(profile, now, reward, xpSource)
 		summary.credits = reward.credits
 	end
 	if reward.xp then
-		local got, lv = Progression.addXp(profile, reward.xp, xpSource, now)
+		local got, lv = giveXp(profile, reward.xp, xpSource, now)
 		summary.xp = got
 		summary.levelsGained = lv
 	end
@@ -464,6 +520,15 @@ function ProfileOps.openCases(profile, ctx, caseId, quantity, opts)
 	if profile.level < caseDef.requiredLevel then
 		return fail("level_locked")
 	end
+	if quantity > AttributeConfig.maxQuantity(profile.attributes and profile.attributes.multiOpen) then
+		return fail("quantity_locked")
+	end
+	if caseDef.eventId then
+		local ev = EventDefinitions.activeEvent(now)
+		if not ev or ev.id ~= caseDef.eventId then
+			return fail("case_unavailable")
+		end
+	end
 	if ProfileSchema.itemCount(profile) + quantity > EconomyConfig.InventoryCapacity then
 		return fail("inventory_full")
 	end
@@ -505,11 +570,14 @@ function ProfileOps.openCases(profile, ctx, caseId, quantity, opts)
 		local payload = { rarity = def.rarity, tier = tier, collection = def.collection, caseId = caseId }
 		if isNew then
 			profile.discovered[def.id] = now
-			local _, lv = Progression.addXp(profile, RarityConfig.Rarities[def.rarity].discoverXp, nil, now)
+			local _, lv = giveXp(profile, RarityConfig.Rarities[def.rarity].discoverXp, nil, now)
 			levelsGained = levelsGained + lv
 			ProfileOps.emit(profile, now, "discover", payload, 1)
 			if def.collection == featured then
 				ProfileOps.emit(profile, now, "discoverFeatured", payload, 1)
+			end
+			if ProfileOps.collectionStatus(profile)[def.collection].complete then
+				ProfileOps.emit(profile, now, "collectionComplete", payload, 1)
 			end
 		end
 		ProfileOps.emit(profile, now, "obtain", payload, 1)
@@ -520,7 +588,7 @@ function ProfileOps.openCases(profile, ctx, caseId, quantity, opts)
 	end
 
 	profile.stats.casesOpened = profile.stats.casesOpened + quantity
-	local _, lv = Progression.addXp(profile, EconomyConfig.Opening.XpPerOpen * quantity, "open", now)
+	local _, lv = giveXp(profile, EconomyConfig.Opening.XpPerOpen * quantity, "open", now)
 	levelsGained = levelsGained + lv
 	ProfileOps.emit(profile, now, "open", { caseId = caseId }, quantity)
 	local newAchievements = ProfileOps.checkAchievements(profile, now)
@@ -559,7 +627,8 @@ function ProfileOps.sellPreview(profile, uids)
 end
 
 -- Venda atômica de uma ou mais instâncias. confirmFavorites precisa ser true para vender favoritas.
-function ProfileOps.sellItems(profile, ctx, uids, confirmFavorites)
+-- confirmValuable precisa ser true para vender Lendárias/Secretas (EconomyConfig.ValuableConfirmTier).
+function ProfileOps.sellItems(profile, ctx, uids, confirmFavorites, confirmValuable)
 	local now = ctx.now
 	if type(uids) ~= "table" or #uids == 0 or #uids > 200 then
 		return fail("invalid_request")
@@ -585,6 +654,9 @@ function ProfileOps.sellItems(profile, ctx, uids, confirmFavorites)
 			return fail("favorite_locked")
 		end
 		local def = SkinDefinitions.ById[item.defId]
+		if RarityConfig.tier(def.rarity) >= EconomyConfig.ValuableConfirmTier and confirmValuable ~= true then
+			return fail("valuable_locked")
+		end
 		total = total + math.floor(def.value * EconomyConfig.SellRate)
 		for k, v in pairs(EconomyConfig.SellMaterials[def.rarity] or {}) do
 			mats[k] = (mats[k] or 0) + v
@@ -666,6 +738,7 @@ function ProfileOps.deposit(profile, ctx, uid)
 	BankMath.settle(profile, now) -- liquida com a taxa antiga antes de mudar
 	item.location = "bank"
 	item.equipped = false
+	item.showcase = nil
 	item.depositedAt = now
 	ProfileOps.emit(profile, now, "deposit", {}, 1)
 	logTx(profile, now, "deposit", { uid = uid })
@@ -778,7 +851,7 @@ function ProfileOps.applyUpgrade(profile, ctx, uid, recipeId)
 	addMaterials(profile, recipe.materials, -1)
 	item.upgrades[recipeId] = true
 	profile.stats.upgradesDone = profile.stats.upgradesDone + 1
-	local _, lv = Progression.addXp(profile, recipe.xp, "upgrade", now)
+	local _, lv = giveXp(profile, recipe.xp, "upgrade", now)
 	ProfileOps.emit(profile, now, "upgrade", { rarity = def.rarity, tier = RarityConfig.tier(def.rarity) }, 1)
 	local newAchievements = ProfileOps.checkAchievements(profile, now)
 	logTx(profile, now, "upgrade", { uid = uid, recipe = recipeId, cost = cost })
@@ -874,11 +947,11 @@ end
 function ProfileOps.claimEventChallenge(profile, ctx, challengeId)
 	local now = ctx.now
 	ProfileOps.refreshPeriods(profile, now)
-	local ev = EventConfig.activeEvent(now)
+	local ev = EventDefinitions.activeEvent(now)
 	if not ev then
 		return fail("no_event")
 	end
-	local c = EventConfig.ChallengeById[challengeId]
+	local c = EventDefinitions.ChallengeById[challengeId]
 	if not c or c.eventId ~= ev.id then
 		return fail("mission_inactive")
 	end
@@ -911,6 +984,12 @@ function ProfileOps.claimCollection(profile, ctx, collectionId)
 	end
 	profile.collectionsClaimed[collectionId] = true
 	local summary = ProfileOps.grantReward(profile, now, reward, nil)
+	summary.cosmetics = {}
+	for _, kind in ipairs(ProgressionConfig.CollectionCosmetics) do
+		local id = kind .. "_" .. collectionId
+		profile.cosmetics[id] = true
+		table.insert(summary.cosmetics, id)
+	end
 	ProfileOps.checkAchievements(profile, now)
 	logTx(profile, now, "collection", { collection = collectionId })
 	return true, { collection = collectionId, reward = summary }
@@ -945,6 +1024,139 @@ end
 function ProfileOps.setFastOpen(profile, ctx, value)
 	profile.settings.fastOpen = value == true
 	return true, { fastOpen = profile.settings.fastOpen }
+end
+
+function ProfileOps.setReduceEffects(profile, ctx, value)
+	profile.settings.reduceEffects = value == true
+	return true, { reduceEffects = profile.settings.reduceEffects }
+end
+
+---------------------------------------------------------------------------
+-- showroom (cosmético)
+---------------------------------------------------------------------------
+
+function ProfileOps.showcaseCount(profile)
+	local n = 0
+	for _, item in pairs(profile.inventory) do
+		if item.showcase then
+			n = n + 1
+		end
+	end
+	return n
+end
+
+function ProfileOps.setShowcase(profile, ctx, uid, value)
+	local item = profile.inventory[uid]
+	if not item then
+		return fail("invalid_item")
+	end
+	if value then
+		if item.location == "bank" then
+			return fail("item_in_bank")
+		end
+		if not item.showcase and ProfileOps.showcaseCount(profile) >= EconomyConfig.ShowcaseSlots then
+			return fail("showcase_full")
+		end
+		item.showcase = true
+	else
+		item.showcase = nil
+	end
+	return true, { uid = uid, showcase = item.showcase == true }
+end
+
+---------------------------------------------------------------------------
+-- atributos
+---------------------------------------------------------------------------
+
+-- nível atual de um atributo (os vinculados leem a melhoria do banco)
+function ProfileOps.attributeLevel(profile, attrId)
+	local attr = AttributeConfig.Attributes[attrId]
+	if not attr then
+		return 0
+	end
+	if attr.linkedBankUpgrade then
+		return BankMath.upgradeLevel(profile, attr.linkedBankUpgrade)
+	end
+	return profile.attributes[attrId] or 0
+end
+
+-- dados exibidos no painel: nível, limite, custo, requisito, benefício atual e seguinte
+function ProfileOps.attributeInfo(profile, attrId)
+	local attr = AttributeConfig.Attributes[attrId]
+	local level = ProfileOps.attributeLevel(profile, attrId)
+	local maxLevel, cost, req
+	if attr.linkedBankUpgrade then
+		local u = BankConfig.Upgrades[attr.linkedBankUpgrade]
+		maxLevel = u.maxLevel
+		if level < maxLevel then
+			cost = BankMath.upgradeCost(attr.linkedBankUpgrade, level)
+			req = u.requiredLevel(level)
+		end
+	else
+		maxLevel = attr.maxLevel
+		if level < maxLevel then
+			cost = AttributeConfig.cost(attr, level)
+			req = attr.requiredLevel(level)
+		end
+	end
+	return {
+		id = attrId,
+		displayName = attr.displayName,
+		description = attr.description,
+		level = level,
+		maxLevel = maxLevel,
+		cost = cost,
+		requiredLevel = req,
+		benefit = attr.benefit(level),
+		nextBenefit = level < maxLevel and attr.benefit(level + 1) or nil,
+		linked = attr.linkedBankUpgrade,
+	}
+end
+
+function ProfileOps.buyAttribute(profile, ctx, attrId)
+	local attr = AttributeConfig.Attributes[attrId]
+	if not attr then
+		return fail("invalid_attribute")
+	end
+	if attr.linkedBankUpgrade then
+		return ProfileOps.buyBankUpgrade(profile, ctx, attr.linkedBankUpgrade)
+	end
+	local level = profile.attributes[attrId] or 0
+	if level >= attr.maxLevel then
+		return fail("max_level")
+	end
+	if profile.level < attr.requiredLevel(level) then
+		return fail("level_locked")
+	end
+	local cost = AttributeConfig.cost(attr, level)
+	if profile.credits < cost then
+		return fail("insufficient_credits")
+	end
+	addCredits(profile, -cost)
+	profile.attributes[attrId] = level + 1
+	logTx(profile, ctx.now, "attribute", { attribute = attrId, level = level + 1, cost = cost })
+	return true, { attribute = attrId, level = level + 1, cost = cost }
+end
+
+-- Variante exclusiva da coleção: grátis para skins de uma coleção concluída e resgatada.
+function ProfileOps.applyCollectionVariant(profile, ctx, uid)
+	local item = profile.inventory[uid]
+	if not item then
+		return fail("invalid_item")
+	end
+	if item.location == "bank" then
+		return fail("item_in_bank")
+	end
+	local def = SkinDefinitions.ById[item.defId]
+	if not profile.cosmetics["variant_" .. def.collection] then
+		return fail("cosmetic_locked")
+	end
+	if item.upgrades.colVariant then
+		return fail("already_upgraded")
+	end
+	item.upgrades.colVariant = true
+	logTx(profile, ctx.now, "colVariant", { uid = uid })
+	return true, { uid = uid }
 end
 
 ---------------------------------------------------------------------------
@@ -996,6 +1208,8 @@ function ProfileOps.rebirthPreview(profile, now)
 		bankEfficiencyAfter = math.min(nextN * R.BankEfficiencyPerRebirth, R.BankEfficiencyMax),
 		luckAfter = math.min(nextN * R.LuckPerRebirth, R.LuckMax),
 		equipSlotBonusAfter = math.floor(nextN / R.ExtraEquipSlotEvery),
+		bankSlotBonusAfter = math.floor(nextN / R.ExtraBankSlotEvery),
+		xpBonusAfter = math.min(nextN * R.XpBonusPerRebirth, R.XpBonusMax),
 		confirmPhrase = R.ConfirmPhrase,
 	}
 end

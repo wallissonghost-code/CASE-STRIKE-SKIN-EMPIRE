@@ -13,6 +13,8 @@ local EconomyConfig = require(Shared.Config.EconomyConfig)
 local CaseDefinitions = require(Shared.Config.CaseDefinitions)
 local SkinDefinitions = require(Shared.Config.SkinDefinitions)
 local RarityConfig = require(Shared.Config.RarityConfig)
+local AttributeConfig = require(Shared.Config.AttributeConfig)
+local DropValidator = require(Shared.Logic.DropValidator)
 
 local Remotes = require(script.Parent.Parent.Core.Remotes)
 local Validate = require(script.Parent.Parent.Core.Validate)
@@ -49,7 +51,7 @@ end
 local function handleOpen(player, payload)
 	local caseId = payload.caseId
 	local quantity = payload.quantity
-	if not Validate.id(caseId, 24) or not Validate.int(quantity, 1, 10) then
+	if not Validate.id(caseId, 24) or not Validate.int(quantity, 1, 25) then
 		return Remotes.fail("invalid_request", "Pedido inválido.")
 	end
 	if not CaseDefinitions.AllowedQuantities[quantity] then
@@ -60,7 +62,9 @@ local function handleOpen(player, payload)
 
 	-- intervalo mínimo entre aberturas (servidor)
 	local clock = os.clock()
-	local minInterval = fast and EconomyConfig.Opening.MinIntervalFast or EconomyConfig.Opening.MinIntervalNormal
+	local profileNow = PlayerDataService.getProfile(player)
+	local speed = AttributeConfig.speedFactor(profileNow and profileNow.attributes.openSpeed or 0)
+	local minInterval = (fast and EconomyConfig.Opening.MinIntervalFast or EconomyConfig.Opening.MinIntervalNormal) * speed
 	if lastOpenAt[player] and clock - lastOpenAt[player] < minInterval then
 		return Remotes.fail("rate_limited", "Aguarde a roleta terminar.")
 	end
@@ -97,13 +101,25 @@ local function handleOpen(player, payload)
 	return response
 end
 
-function CaseService.init() end
+-- Valida todas as tabelas de RNG na inicialização; caixas com problemas ficam indisponíveis.
+function CaseService.init()
+	local errors, badCases = DropValidator.validate()
+	for _, e in ipairs(errors) do
+		warn("[CaseService] validação de conteúdo: " .. e)
+	end
+	for caseId in pairs(badCases) do
+		local c = CaseDefinitions.ById[caseId]
+		if c then
+			c.available = false
+		end
+	end
+end
 
 function CaseService.start()
 	Remotes.on("RequestCaseOpen", "open", "CaseOpen", handleOpen)
 
 	Remotes.on("RequestCaseOpen", "startAuto", "CaseOpen", function(player, payload)
-		if not Validate.id(payload.caseId, 24) or not Validate.int(payload.quantity, 1, 10) then
+		if not Validate.id(payload.caseId, 24) or not Validate.int(payload.quantity, 1, 25) then
 			return Remotes.fail("invalid_request", "Pedido inválido.")
 		end
 		if not CaseDefinitions.ById[payload.caseId] or not CaseDefinitions.AllowedQuantities[payload.quantity] then

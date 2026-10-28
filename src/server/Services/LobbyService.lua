@@ -1,6 +1,7 @@
 -- LobbyService: constrói o lobby estilizado por código (peças simples, otimizado para celular).
--- Praça central, caminhos, vegetação e prédios com atalhos (ProximityPrompt) para os painéis.
--- A Arena de Batalha aparece bloqueada com "EM BREVE".
+-- Mapa compacto: praça central com spawn e vitrine das 12 caixas; loja, banco, oficina, museu
+-- (índice), missões e área de recompensas em volta; showroom de vitrines dos jogadores;
+-- painel de rankings; portais de futuras atualizações bloqueados com "EM BREVE".
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Lighting = game:GetService("Lighting")
@@ -136,6 +137,32 @@ local function building(name, pos, size, wall, roof, label, panel, actionText)
 	return model
 end
 
+local function rock(pos, scale)
+	local colors = { Color3.fromRGB(150, 150, 160), Color3.fromRGB(125, 128, 140), Color3.fromRGB(170, 165, 155) }
+	part({
+		Name = "Rock",
+		Size = Vector3.new(3.2, 2.2, 2.6) * scale,
+		CFrame = CFrame.new(pos + Vector3.new(0, 0.8 * scale, 0)) * CFrame.Angles(rand:NextNumber(-0.3, 0.3), rand:NextNumber(0, 6.28), rand:NextNumber(-0.3, 0.3)),
+		Color = colors[rand:NextInteger(1, #colors)],
+		Material = Enum.Material.Slate,
+	})
+end
+
+-- portal de atualização futura: arco neon com barreira e placa "EM BREVE"
+local function portal(name, pos, facing, color)
+	local model = Instance.new("Model")
+	model.Name = "Portal_" .. name
+	model.Parent = root
+	local cf = CFrame.lookAt(pos, pos + facing)
+	part({ Name = "PillarL", Size = Vector3.new(1.6, 14, 1.6), CFrame = cf * CFrame.new(-6, 7, 0), Color = Color3.fromRGB(60, 60, 75), Material = Enum.Material.Slate, Parent = model })
+	part({ Name = "PillarR", Size = Vector3.new(1.6, 14, 1.6), CFrame = cf * CFrame.new(6, 7, 0), Color = Color3.fromRGB(60, 60, 75), Material = Enum.Material.Slate, Parent = model })
+	part({ Name = "Top", Size = Vector3.new(14, 1.6, 1.6), CFrame = cf * CFrame.new(0, 14, 0), Color = color, Material = Enum.Material.Neon, Parent = model })
+	local field = part({ Name = "Field", Size = Vector3.new(10.4, 12.4, 0.4), CFrame = cf * CFrame.new(0, 7, 0), Color = color, Material = Enum.Material.ForceField, Transparency = 0.1, Parent = model })
+	sign(field, name .. "\n" .. FeatureFlags.LockedLabel, Color3.new(1, 1, 1), 9)
+	prompt(field, "Ver detalhes", "Battle")
+	return model
+end
+
 local function path(from, to, width)
 	local mid = (from + to) / 2
 	local len = (to - from).Magnitude
@@ -160,8 +187,8 @@ function LobbyService.start()
 	root.Name = "Lobby"
 	root.Parent = workspace
 
-	-- terreno
-	part({ Name = "Ground", Size = Vector3.new(420, 2, 420), CFrame = CFrame.new(0, -1, 0), Color = Color3.fromRGB(100, 190, 90), Material = Enum.Material.Grass })
+	-- terreno e praça
+	part({ Name = "Ground", Size = Vector3.new(360, 2, 360), CFrame = CFrame.new(0, -1, 0), Color = Color3.fromRGB(100, 190, 90), Material = Enum.Material.Grass })
 	part({ Name = "Plaza", Shape = Enum.PartType.Cylinder, Size = Vector3.new(0.4, 64, 64), CFrame = CFrame.new(0, 0.2, 0) * CFrame.Angles(0, 0, math.rad(90)), Color = Color3.fromRGB(235, 225, 200), Material = Enum.Material.Slate })
 	part({ Name = "PlazaRing", Shape = Enum.PartType.Cylinder, Size = Vector3.new(0.45, 20, 20), CFrame = CFrame.new(0, 0.22, 0) * CFrame.Angles(0, 0, math.rad(90)), Color = Color3.fromRGB(255, 190, 60), Material = Enum.Material.Neon, CanCollide = false })
 
@@ -169,7 +196,7 @@ function LobbyService.start()
 	spawn.Name = "Spawn"
 	spawn.Anchored = true
 	spawn.Size = Vector3.new(8, 0.4, 8)
-	spawn.CFrame = CFrame.new(0, 0.45, 0)
+	spawn.CFrame = CFrame.new(0, 0.45, 9)
 	spawn.Transparency = 1
 	spawn.CanCollide = false
 	spawn.Neutral = true
@@ -180,72 +207,144 @@ function LobbyService.start()
 	local R = 58
 	local spots = {
 		{ "Loja", Vector3.new(0, 0, -R), Color3.fromRGB(255, 170, 60), Color3.fromRGB(200, 80, 50), "LOJA DE CAIXAS", "Shop", "Abrir caixas" },
-		{ "Banco", Vector3.new(R, 0, -20), Color3.fromRGB(250, 235, 180), Color3.fromRGB(60, 140, 90), "BANCO DE SKINS", "Bank", "Abrir banco" },
-		{ "Oficina", Vector3.new(-R, 0, -20), Color3.fromRGB(180, 200, 230), Color3.fromRGB(60, 90, 170), "OFICINA", "Upgrade", "Melhorar skins" },
-		{ "Museu", Vector3.new(R, 0, 30), Color3.fromRGB(230, 220, 250), Color3.fromRGB(130, 80, 190), "ÍNDICE / MUSEU", "Index", "Ver coleções" },
-		{ "Missoes", Vector3.new(-R, 0, 30), Color3.fromRGB(240, 240, 240), Color3.fromRGB(220, 60, 90), "MISSÕES", "Missions", "Ver missões" },
+		{ "Banco", Vector3.new(R, 0, -24), Color3.fromRGB(250, 235, 180), Color3.fromRGB(60, 140, 90), "BANCO DE SKINS", "Bank", "Abrir banco" },
+		{ "Oficina", Vector3.new(-R, 0, -24), Color3.fromRGB(180, 200, 230), Color3.fromRGB(60, 90, 170), "OFICINA", "Upgrade", "Melhorar skins" },
+		{ "Museu", Vector3.new(R, 0, 26), Color3.fromRGB(230, 220, 250), Color3.fromRGB(130, 80, 190), "ÍNDICE / MUSEU", "Collections", "Ver coleções" },
+		{ "Missoes", Vector3.new(-R, 0, 26), Color3.fromRGB(240, 240, 240), Color3.fromRGB(220, 60, 90), "MISSÕES", "Missions", "Ver missões" },
+		{ "Recompensas", Vector3.new(-30, 0, 58), Color3.fromRGB(255, 230, 240), Color3.fromRGB(235, 90, 150), "PRESENTES", "Gifts", "Resgatar presentes" },
 	}
 	for _, s in ipairs(spots) do
 		building(s[1], s[2], Vector3.new(22, 14, 16), s[3], s[4], s[5], s[6], s[7])
 		path(Vector3.new(0, 0, 0), s[2], 8)
 	end
 
-	-- Arena de Batalha: bloqueada (EM BREVE)
-	local arenaPos = Vector3.new(0, 0, R + 20)
-	local arena = building("ArenaBloqueada", arenaPos, Vector3.new(30, 12, 18), Color3.fromRGB(90, 90, 100), Color3.fromRGB(50, 50, 60), "ARENA DE BATALHA\n" .. FeatureFlags.LockedLabel, nil)
-	path(Vector3.new(0, 0, 0), arenaPos, 8)
-	part({
-		Name = "Barrier",
-		Size = Vector3.new(14, 8, 1),
-		CFrame = CFrame.new(arenaPos + Vector3.new(0, 4, -11)),
-		Color = Color3.fromRGB(255, 70, 70),
-		Material = Enum.Material.ForceField,
-		Transparency = 0.2,
-		Parent = arena,
+	-- painel de rankings (atualizado pelo LeaderboardService a partir do cache)
+	local boardPos = Vector3.new(30, 0, 58)
+	local board = part({
+		Name = "RankingBoard",
+		Size = Vector3.new(18, 12, 1),
+		CFrame = CFrame.lookAt(boardPos + Vector3.new(0, 7, 0), Vector3.new(0, 7, 0)),
+		Color = Color3.fromRGB(30, 34, 52),
+		Material = Enum.Material.SmoothPlastic,
 	})
+	part({ Name = "RankingFrame", Size = Vector3.new(19, 13, 0.6), CFrame = board.CFrame * CFrame.new(0, 0, 0.5), Color = Color3.fromRGB(255, 176, 46), Material = Enum.Material.Neon, CanCollide = false })
+	local surface = Instance.new("SurfaceGui")
+	surface.Name = "RankingGui"
+	surface.Face = Enum.NormalId.Front
+	surface.PixelsPerStud = 40
+	surface.LightInfluence = 0
+	surface.Parent = board
+	local list = Instance.new("TextLabel")
+	list.Name = "Rows"
+	list.Size = UDim2.fromScale(1, 1)
+	list.BackgroundTransparency = 1
+	list.TextColor3 = Color3.new(1, 1, 1)
+	list.Font = Enum.Font.GothamBold
+	list.TextSize = 30
+	list.TextYAlignment = Enum.TextYAlignment.Top
+	list.Text = "🏆 PATRIMÔNIO\nCarregando..."
+	list.Parent = surface
+	prompt(board, "Ver rankings", "Leaderboard")
+	path(Vector3.new(0, 0, 0), boardPos, 6)
 
-	-- vitrine das caixas na praça (decorativa; a compra acontece na Loja)
+	-- showroom: pavilhão aberto com 12 vitrines (uma por jogador, visitáveis)
+	local showroom = Instance.new("Model")
+	showroom.Name = "Showroom"
+	showroom.Parent = root
+	local center = Vector3.new(0, 0, 118)
+	part({ Name = "Floor", Size = Vector3.new(92, 0.6, 62), CFrame = CFrame.new(center + Vector3.new(0, 0.3, 0)), Color = Color3.fromRGB(245, 242, 235), Material = Enum.Material.Marble, Parent = showroom })
+	for _, x in ipairs({ -45, 45 }) do
+		for _, z in ipairs({ -30, 0, 30 }) do
+			part({ Name = "Column", Size = Vector3.new(2, 16, 2), CFrame = CFrame.new(center + Vector3.new(x, 8, z)), Color = Color3.fromRGB(230, 225, 215), Material = Enum.Material.Marble, Parent = showroom })
+		end
+	end
+	part({ Name = "Roof", Size = Vector3.new(96, 1.2, 66), CFrame = CFrame.new(center + Vector3.new(0, 16.6, 0)), Color = Color3.fromRGB(70, 60, 110), Transparency = 0.15, Parent = showroom })
+	local entrance = part({ Name = "Entrance", Size = Vector3.new(16, 0.3, 4), CFrame = CFrame.new(center + Vector3.new(0, 0.65, -33)), Color = Color3.fromRGB(160, 90, 245), Material = Enum.Material.Neon, CanCollide = false, Parent = showroom })
+	sign(entrance, "SHOWROOM DE SKINS", Color3.new(1, 1, 1), 9)
+	local boothFolder = Instance.new("Folder")
+	boothFolder.Name = "Booths"
+	boothFolder.Parent = showroom
+	local n = 0
+	for row = 0, 2 do
+		for col = 0, 3 do
+			n = n + 1
+			local pos = center + Vector3.new(-33 + col * 22, 0.7, -18 + row * 19)
+			local booth = part({
+				Name = "Booth" .. n,
+				Size = Vector3.new(19, 0.2, 14),
+				CFrame = CFrame.new(pos),
+				Color = Color3.fromRGB(225, 220, 245),
+				Material = Enum.Material.SmoothPlastic,
+				Parent = boothFolder,
+			})
+			booth:SetAttribute("Index", n)
+		end
+	end
+	path(Vector3.new(0, 0, 0), center + Vector3.new(0, 0, -33), 10)
+
+	-- portais de futuras atualizações (bloqueados)
+	local portals = {
+		{ "ARENA PVP", Vector3.new(96, 0, -30), Color3.fromRGB(255, 70, 70) },
+		{ "MASMORRA DE MONSTROS", Vector3.new(96, 0, 0), Color3.fromRGB(120, 220, 90) },
+		{ "TORRE DOS CHEFES", Vector3.new(96, 0, 30), Color3.fromRGB(255, 160, 40) },
+		{ "MERCADO DE TROCAS", Vector3.new(-96, 0, 0), Color3.fromRGB(80, 170, 255) },
+	}
+	for _, pt in ipairs(portals) do
+		local facing = (Vector3.new(0, 0, 0) - pt[2]) * Vector3.new(1, 0, 1)
+		portal(pt[1], pt[2], facing.Unit, pt[3])
+	end
+	path(Vector3.new(0, 0, 0), Vector3.new(90, 0, 0), 6)
+	path(Vector3.new(0, 0, 0), Vector3.new(-90, 0, 0), 6)
+
+	-- vitrine das 12 caixas na praça (a compra acontece na Loja)
 	for i, caseDef in ipairs(CaseDefinitions.List) do
 		local angle = (i - 1) / #CaseDefinitions.List * math.pi * 2
-		local p = Vector3.new(math.cos(angle) * 22, 0, math.sin(angle) * 22)
-		part({ Name = "Pedestal", Size = Vector3.new(4, 2.4, 4), CFrame = CFrame.new(p + Vector3.new(0, 1.2, 0)), Color = Color3.fromRGB(245, 240, 230), Material = Enum.Material.Marble })
+		local p = Vector3.new(math.cos(angle) * 24, 0, math.sin(angle) * 24)
+		part({ Name = "Pedestal", Size = Vector3.new(3.6, 2.2, 3.6), CFrame = CFrame.new(p + Vector3.new(0, 1.1, 0)), Color = Color3.fromRGB(245, 240, 230), Material = Enum.Material.Marble })
 		local model = CaseModelFactory.build(caseDef)
-		model:PivotTo(CFrame.new(p + Vector3.new(0, 3.8, 0)) * CFrame.Angles(0, -angle + math.pi / 2, 0))
+		model:ScaleTo(0.8)
+		model:PivotTo(CFrame.new(p + Vector3.new(0, 3.4, 0)) * CFrame.Angles(0, -angle + math.pi / 2, 0))
 		model:SetAttribute("Spin", true)
 		model.Parent = root
 		local pp = prompt(model.PrimaryPart, "Ver " .. caseDef.name, "Shop")
 		pp:SetAttribute("CaseId", caseDef.id)
-		sign(model.PrimaryPart, caseDef.name, Color3.fromRGB(caseDef.trim[1], caseDef.trim[2], caseDef.trim[3]), 2.6)
+		sign(model.PrimaryPart, caseDef.name, Color3.fromRGB(caseDef.trim[1], caseDef.trim[2], caseDef.trim[3]), 2.4)
 	end
 
 	-- fonte central
 	part({ Name = "Fountain", Shape = Enum.PartType.Cylinder, Size = Vector3.new(1.6, 10, 10), CFrame = CFrame.new(0, 0.8, 0) * CFrame.Angles(0, 0, math.rad(90)), Color = Color3.fromRGB(200, 200, 210), Material = Enum.Material.Marble })
 	part({ Name = "Water", Shape = Enum.PartType.Cylinder, Size = Vector3.new(0.3, 8.6, 8.6), CFrame = CFrame.new(0, 1.55, 0) * CFrame.Angles(0, 0, math.rad(90)), Color = Color3.fromRGB(80, 180, 255), Material = Enum.Material.Glass, Transparency = 0.3, CanCollide = false })
-	spawn.CFrame = CFrame.new(0, 0.45, 9)
 
-	-- vegetação (evita prédios e caminhos)
+	-- vegetação e pedras (evitando prédios, caminhos, showroom e portais)
+	local avoid = { { Vector3.new(0, 0, 0), 40 }, { boardPos, 14 }, { center, 56 } }
+	for _, s in ipairs(spots) do
+		table.insert(avoid, { s[2], 20 })
+	end
+	for _, pt in ipairs(portals) do
+		table.insert(avoid, { pt[2], 14 })
+	end
 	local function blocked(pos)
-		if pos.Magnitude < 40 then
-			return true
-		end
-		for _, s in ipairs(spots) do
-			if (pos - s[2]).Magnitude < 20 then
+		for _, a in ipairs(avoid) do
+			if (pos - a[1]).Magnitude < a[2] then
 				return true
 			end
 		end
-		if (pos - arenaPos).Magnitude < 24 then
+		-- caminhos principais em cruz
+		if math.abs(pos.X) < 6 or math.abs(pos.Z) < 5 then
 			return true
 		end
 		return false
 	end
-	local placed = 0
-	local tries = 0
-	while placed < 55 and tries < 600 do
+	local placed, tries = 0, 0
+	while placed < 70 and tries < 900 do
 		tries = tries + 1
-		local pos = Vector3.new(rand:NextNumber(-190, 190), 0, rand:NextNumber(-190, 190))
+		local pos = Vector3.new(rand:NextNumber(-165, 165), 0, rand:NextNumber(-165, 165))
 		if not blocked(pos) then
 			placed = placed + 1
-			if placed % 3 == 0 then
+			local kind = placed % 5
+			if kind == 0 then
+				rock(pos, rand:NextNumber(0.8, 1.8))
+			elseif kind == 1 then
 				bush(pos)
 			else
 				tree(pos, rand:NextNumber(0.8, 1.4))
@@ -253,12 +352,12 @@ function LobbyService.start()
 		end
 	end
 
-	-- cercas nas bordas para manter os jogadores na área
+	-- cercas invisíveis nas bordas
 	for _, w in ipairs({
-		{ Vector3.new(0, 4, 205), Vector3.new(420, 8, 2) },
-		{ Vector3.new(0, 4, -205), Vector3.new(420, 8, 2) },
-		{ Vector3.new(205, 4, 0), Vector3.new(2, 8, 420) },
-		{ Vector3.new(-205, 4, 0), Vector3.new(2, 8, 420) },
+		{ Vector3.new(0, 4, 175), Vector3.new(360, 8, 2) },
+		{ Vector3.new(0, 4, -175), Vector3.new(360, 8, 2) },
+		{ Vector3.new(175, 4, 0), Vector3.new(2, 8, 360) },
+		{ Vector3.new(-175, 4, 0), Vector3.new(2, 8, 360) },
 	}) do
 		part({ Name = "Fence", Size = w[2], CFrame = CFrame.new(w[1]), Transparency = 1 })
 	end

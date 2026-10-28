@@ -22,6 +22,16 @@ function UpgradeService.start()
 			return ProfileOps.applyUpgrade(profile, ctx, payload.uid, payload.recipeId)
 		end, { important = true })
 	end)
+
+	-- variante exclusiva de coleção (grátis após resgatar a coleção)
+	Remotes.on("UpgradeAction", "collectionVariant", "Upgrade", function(player, payload)
+		if not Validate.id(payload.uid, 24) then
+			return Remotes.fail("invalid_request", "Pedido inválido.")
+		end
+		return PlayerDataService.run(player, function(profile, ctx)
+			return ProfileOps.applyCollectionVariant(profile, ctx, payload.uid)
+		end, { important = true })
+	end)
 end
 
 return UpgradeService

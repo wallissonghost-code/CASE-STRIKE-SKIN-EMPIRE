@@ -9,9 +9,13 @@ local Util = script.Parent:WaitForChild("Util")
 
 local UI = require(Controllers.UIController)
 local Store = require(Util.Store)
+local Net = require(Util.Net)
 
 UI.init()
 UI.store = Store
+Net.setBusyHandler(function(on)
+	UI.setLoading(on)
+end)
 
 local order = {
 	"HUDController",
@@ -20,7 +24,7 @@ local order = {
 	"InventoryController",
 	"BankController",
 	"UpgradeController",
-	"IndexController",
+	"CollectionController",
 	"ProgressionPanels",
 	"LeaderboardController",
 	"LobbyController",

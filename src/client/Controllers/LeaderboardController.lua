@@ -14,6 +14,8 @@ local Leaderboard = {}
 local function formatValue(boardId, v)
 	if boardId == "netWorth" then
 		return "₵ " .. Format.short(v)
+	elseif boardId == "bankIncome" then
+		return Format.rate(v / 100)
 	elseif boardId == "level" then
 		local rb = math.floor(v / 1000)
 		local lvl = v % 1000
@@ -23,7 +25,7 @@ local function formatValue(boardId, v)
 end
 
 local function build()
-	local p = UI.createPanel("🏆 Rankings", 860, 600)
+	local p = UI.createPanel("🏆 Rankings", 980, 600, "Rankings")
 	local state = { board = "netWorth", scope = "global", data = nil }
 	local tabs = UI.frame({ BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 38), Parent = p.content })
 	UI.list(tabs, 6, true)
@@ -60,7 +62,7 @@ local function build()
 				Text = b.displayName,
 				TextSize = 13,
 				color = state.board == b.id and UI.Theme.accent or UI.Theme.panel2,
-				Size = UDim2.fromOffset(160, 36),
+				Size = UDim2.fromOffset(150, 36),
 				Parent = tabs,
 				onClick = function()
 					state.board = b.id

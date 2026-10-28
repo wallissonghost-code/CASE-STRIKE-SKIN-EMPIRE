@@ -23,8 +23,12 @@ local FILTERS = {
 	location = { { "all", "Todos" }, { "inventory", "No inventário" }, { "bank", "No banco" }, { "equipped", "Equipados" }, { "favorite", "Favoritos" } },
 	rarity = { { "all", "Todas raridades" }, { "Common", "Comum" }, { "Uncommon", "Incomum" }, { "Rare", "Rara" }, { "Epic", "Épica" }, { "Legendary", "Lendária" }, { "Secret", "Secreta" } },
 	category = { { "all", "Todas categorias" }, { "Pistol", "Pistolas" }, { "SMG", "Submetralhadoras" }, { "Rifle", "Rifles" }, { "Sniper", "Precisão" }, { "Knife", "Facas" } },
-	sort = { { "value", "Maior valor" }, { "rarity", "Raridade" }, { "recent", "Mais recentes" }, { "name", "Nome" } },
+	sort = { { "value", "Maior valor" }, { "valueAsc", "Menor valor" }, { "rarity", "Raridade" }, { "recent", "Mais recentes" }, { "oldest", "Mais antigas" }, { "name", "Nome" } },
+	collection = { { "all", "Todas coleções" } },
 }
+for _, c in ipairs(CaseDefinitions.List) do
+	table.insert(FILTERS.collection, { c.id, c.collectionName })
+end
 
 local function cycle(list, current)
 	for i, e in ipairs(list) do
@@ -43,42 +47,73 @@ local function labelOf(list, current)
 	return list[1][2]
 end
 
--- inspeção 3D em tela cheia
+-- inspeção 3D em tela cheia: arrastar gira, roda/botões aproximam e afastam
 function Inventory.inspect(item)
 	local def = SkinDefinitions.ById[item.defId]
-	local shade = UI.make("TextButton", { Text = "", AutoButtonColor = false, BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.25, Size = UDim2.fromScale(1, 1), Parent = UI.layers.Modal })
-	local vp = UI.skinViewport(def, item.upgrades, UDim2.new(1, 0, 0.8, 0), { spin = true, inspect = item.upgrades.inspect == true, zoom = 0.9 })
+	local shade = UI.frame({ BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.2, Size = UDim2.fromScale(1, 1), Active = true, Parent = UI.layers.Modal })
+	local vp, control = UI.skinViewport(def, item.upgrades, UDim2.new(1, -300, 1, -40), { spin = true, inspect = item.upgrades.inspect == true, zoom = 0.9, interactive = true })
+	vp.Position = UDim2.fromOffset(20, 20)
 	vp.Parent = shade
+	local side = UI.frame({ BackgroundColor3 = UI.Theme.panel, AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -20, 0, 20), Size = UDim2.new(0, 260, 1, -40), Parent = shade })
+	UI.corner(side, 14)
+	UI.padding(side, 14)
+	UI.list(side, 10)
+	local color = UI.rarityColor(def.rarity)
+	local caseDef = CaseDefinitions.ById[def.caseId]
+	local ups = {}
+	for _, r in ipairs(UpgradeRecipes.List) do
+		if item.upgrades[r.id] then
+			table.insert(ups, r.displayName)
+		end
+	end
+	if item.upgrades.colVariant then
+		table.insert(ups, "Variante da coleção")
+	end
+	UI.text({ Text = def.name, Font = UI.Fonts.title, TextSize = 22, AutomaticSize = Enum.AutomaticSize.Y, Size = UDim2.new(1, 0, 0, 0), LayoutOrder = 1, Parent = side })
 	UI.text({
-		Text = def.name .. "\n<font size='16' color='#" .. UI.rarityColor(def.rarity):ToHex() .. "'>" .. RarityConfig.Rarities[def.rarity].displayName .. " • ₵ " .. Format.int(def.value) .. "</font>",
-		Font = UI.Fonts.title,
-		TextSize = 30,
-		TextXAlignment = Enum.TextXAlignment.Center,
-		Size = UDim2.new(1, 0, 0.12, 0),
-		Position = UDim2.fromScale(0, 0.8),
-		Parent = shade,
+		Text = '<font color="#' .. color:ToHex() .. '">' .. RarityConfig.Rarities[def.rarity].displayName .. "</font>\n"
+			.. SkinDefinitions.Categories[def.category].displayName .. "\nAcabamento: " .. def.finish
+			.. "\nColeção: " .. caseDef.collectionName
+			.. "\nValor de catálogo: ₵ " .. Format.int(def.value)
+			.. "\nEfeitos: " .. (#ups > 0 and table.concat(ups, ", ") or "nenhum"),
+		TextSize = 14,
+		AutomaticSize = Enum.AutomaticSize.Y,
+		Size = UDim2.new(1, 0, 0, 0),
+		LayoutOrder = 2,
+		Parent = side,
 	})
-	UI.text({ Text = "Toque para fechar • modelo provisório", TextSize = 13, TextColor3 = UI.Theme.muted, TextXAlignment = Enum.TextXAlignment.Center, Size = UDim2.new(1, 0, 0, 20), Position = UDim2.new(0, 0, 1, -28), Parent = shade })
-	shade.Activated:Connect(function()
+	local zoomRow = UI.frame({ BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 40), LayoutOrder = 3, Parent = side })
+	UI.list(zoomRow, 6, true)
+	UI.button({ Text = "＋ Aproximar", TextSize = 13, color = UI.Theme.panel2, Size = UDim2.new(0.5, -3, 1, 0), Parent = zoomRow, onClick = function()
+		control.zoomBy(-0.15)
+	end })
+	UI.button({ Text = "－ Afastar", TextSize = 13, color = UI.Theme.panel2, Size = UDim2.new(0.5, -3, 1, 0), Parent = zoomRow, onClick = function()
+		control.zoomBy(0.15)
+	end })
+	UI.button({ Text = "↺ Girar automático", TextSize = 13, color = UI.Theme.panel2, Size = UDim2.new(1, 0, 0, 38), LayoutOrder = 4, Parent = side, onClick = function()
+		control.reset()
+	end })
+	UI.text({ Text = "Arraste a arma para girar. Use a roda do mouse ou os botões para aproximar.", TextSize = 12, TextColor3 = UI.Theme.muted, AutomaticSize = Enum.AutomaticSize.Y, Size = UDim2.new(1, 0, 0, 0), LayoutOrder = 5, Parent = side })
+	UI.button({ Text = "✕ Fechar inspeção", color = UI.Theme.bad, Size = UDim2.new(1, 0, 0, 42), LayoutOrder = 6, Parent = side, onClick = function()
 		shade:Destroy()
-	end)
+	end })
 end
 
 local function build()
-	local p = UI.createPanel("🎒 Itens e Equipamentos", 1120, 640)
-	local state = { location = "all", rarity = "all", category = "all", sort = "value", search = "", page = 1, selected = nil }
+	local p = UI.createPanel("🎒 Inventário", 1120, 640, "Inventory")
+	local state = { location = "all", rarity = "all", category = "all", collection = "all", sort = "value", search = "", page = 1, selected = nil }
 
 	-- barra de filtros
 	local bar = UI.frame({ BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 38), Parent = p.content })
 	UI.list(bar, 8, true)
 	local filterButtons = {}
 	local renderGrid
-	for _, key in ipairs({ "location", "rarity", "category", "sort" }) do
+	for _, key in ipairs({ "location", "rarity", "category", "collection", "sort" }) do
 		filterButtons[key] = UI.button({
 			Text = "",
-			TextSize = 14,
+			TextSize = 13,
 			color = UI.Theme.panel2,
-			Size = UDim2.fromOffset(key == "sort" and 140 or 150, 36),
+			Size = UDim2.fromOffset(key == "sort" and 124 or 132, 36),
 			Parent = bar,
 			onClick = function()
 				state[key] = cycle(FILTERS[key], state[key])[1]
@@ -95,7 +130,7 @@ local function build()
 		TextSize = 15,
 		TextColor3 = UI.Theme.text,
 		BackgroundColor3 = UI.Theme.panel2,
-		Size = UDim2.fromOffset(170, 36),
+		Size = UDim2.fromOffset(150, 36),
 		Parent = bar,
 	})
 	UI.corner(search, 10)
@@ -104,7 +139,7 @@ local function build()
 		state.page = 1
 		renderGrid()
 	end)
-	local bulkBtn = UI.button({ Text = "Vender comuns", TextSize = 14, color = UI.Theme.bad, Size = UDim2.fromOffset(140, 36), Parent = bar })
+	local bulkBtn = UI.button({ Text = "Vender comuns", TextSize = 13, color = UI.Theme.bad, Size = UDim2.fromOffset(130, 36), Parent = bar })
 
 	local countLabel = UI.text({ Text = "", TextSize = 13, TextColor3 = UI.Theme.muted, Size = UDim2.new(0, 640, 0, 18), Position = UDim2.fromOffset(0, 44), Parent = p.content })
 
@@ -160,6 +195,9 @@ local function build()
 		if state.category ~= "all" and def.category ~= state.category then
 			return false
 		end
+		if state.collection ~= "all" and def.collection ~= state.collection then
+			return false
+		end
 		if state.search ~= "" and not string.find(string.lower(def.name), state.search, 1, true) then
 			return false
 		end
@@ -191,6 +229,14 @@ local function build()
 				if a.item.obtainedAt ~= b.item.obtainedAt then
 					return (a.item.obtainedAt or 0) > (b.item.obtainedAt or 0)
 				end
+			elseif state.sort == "oldest" then
+				if a.item.obtainedAt ~= b.item.obtainedAt then
+					return (a.item.obtainedAt or 0) < (b.item.obtainedAt or 0)
+				end
+			elseif state.sort == "valueAsc" then
+				if a.def.value ~= b.def.value then
+					return a.def.value < b.def.value
+				end
 			elseif state.sort == "name" then
 				if a.def.name ~= b.def.name then
 					return a.def.name < b.def.name
@@ -216,8 +262,9 @@ local function build()
 				entry.uid = f.item.uid
 				local color = UI.rarityColor(f.def.rarity)
 				entry.card.BackgroundColor3 = UI.Theme.panel2:Lerp(color, 0.18)
-				entry.stroke.Color = f.item.upgrades.frame and Color3.new(1, 1, 1) or color
-				entry.frameGrad.Enabled = f.item.upgrades.frame == true
+				local colFrame = view.cosmetics["frame_" .. f.def.collection] == true
+				entry.stroke.Color = (f.item.upgrades.frame or colFrame) and Color3.new(1, 1, 1) or color
+				entry.frameGrad.Enabled = f.item.upgrades.frame == true or colFrame
 				entry.stroke.Thickness = (state.selected == f.item.uid) and 4 or 2
 				entry.name.Text = f.def.name
 				entry.value.Text = "₵ " .. Format.short(f.def.value)
@@ -230,6 +277,9 @@ local function build()
 				end
 				if f.item.location == "bank" then
 					fl = fl .. "🏦"
+				end
+				if f.item.showcase then
+					fl = fl .. "🖼"
 				end
 				entry.flags.Text = fl
 				local ups = {}
@@ -339,35 +389,39 @@ local function build()
 			actionButton(actions, "🔧 Oficina", UI.Theme.panel, 5, function()
 				UI.open("Upgrade", { uid = item.uid })
 			end)
-			actionButton(actions, "₵ Vender", UI.Theme.bad, 6, function()
+			actionButton(actions, item.showcase and "🖼 Tirar do showroom" or "🖼 Expor no showroom", UI.Theme.blue, 6, function()
+				UI.handle(Net.call("InventoryAction", { action = "showcase", uid = item.uid, value = not item.showcase }), item.showcase and "Removida do showroom." or "Exposta no showroom!")
+			end)
+			actionButton(actions, "₵ Vender", UI.Theme.bad, 7, function()
 				local price = math.floor(def.value * EconomyConfig.SellRate)
+				local tier = RarityConfig.tier(def.rarity)
+				local valuable = tier >= EconomyConfig.ValuableConfirmTier
 				local msg = "Vender " .. def.name .. " por ₵ " .. Format.int(price) .. "? Esta ação não pode ser desfeita."
-				if item.favorite then
-					UI.confirm({
-						title = "⚠️ Skin favorita",
-						message = msg .. "\n\nEsta skin está marcada como FAVORITA. Para confirmar, digite VENDER.",
-						confirmText = "Vender favorita",
-						danger = true,
-						phrase = "VENDER",
-						onConfirm = function()
-							if UI.handle(Net.call("InventoryAction", { action = "sell", uids = { item.uid }, confirmFavorites = true }), "Vendida por ₵ " .. Format.int(price)) then
-								state.selected = nil
-							end
-						end,
-					})
-				else
-					UI.confirm({
-						title = "Vender skin?",
-						message = msg,
-						confirmText = "Vender",
-						danger = true,
-						onConfirm = function()
-							if UI.handle(Net.call("InventoryAction", { action = "sell", uids = { item.uid } }), "Vendida por ₵ " .. Format.int(price)) then
-								state.selected = nil
-							end
-						end,
-					})
+				local needPhrase = item.favorite or valuable
+				if valuable then
+					msg = msg .. "\n\n⚠️ Skin " .. RarityConfig.Rarities[def.rarity].displayName:upper() .. "."
+				elseif tier >= EconomyConfig.RareWarnTier then
+					msg = msg .. "\n\n⚠️ Esta skin é " .. RarityConfig.Rarities[def.rarity].displayName .. "."
 				end
+				if item.favorite then
+					msg = msg .. "\n\nEsta skin está marcada como FAVORITA."
+				end
+				if needPhrase then
+					msg = msg .. " Para confirmar, digite VENDER."
+				end
+				UI.confirm({
+					title = needPhrase and "⚠️ Confirmar venda" or "Vender skin?",
+					message = msg,
+					confirmText = item.favorite and "Vender favorita" or "Vender",
+					danger = true,
+					phrase = needPhrase and "VENDER" or nil,
+					onConfirm = function()
+						local res = Net.call("InventoryAction", { action = "sell", uids = { item.uid }, confirmFavorites = item.favorite == true, confirmValuable = valuable })
+						if UI.handle(res, "Vendida por ₵ " .. Format.int(price)) then
+							state.selected = nil
+						end
+					end,
+				})
 			end)
 		else
 			actionButton(actions, "↩ Retirar do banco", UI.Theme.good, 3, function()

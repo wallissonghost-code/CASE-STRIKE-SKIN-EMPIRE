@@ -1,0 +1,63 @@
+name: Publicar no Roblox
+
+# Publicação GitHub -> Roblox exclusiva do CASE STRIKE RNG (independente de outros jogos).
+# Só roda manualmente (Actions -> Publicar no Roblox -> Run workflow) e só depois de os testes passarem.
+#
+# Configure em Settings -> Secrets and variables -> Actions deste repositório:
+#   ROBLOX_API_KEY      chave Open Cloud com permissão "universe-places" (Write) para ESTE jogo
+#   ROBLOX_UNIVERSE_ID  ID do universo (experiência) do CASE STRIKE RNG
+#   ROBLOX_PLACE_ID     ID do place a publicar
+#
+# Usa a API oficial de publicação de places do Open Cloud:
+#   POST https://apis.roblox.com/universes/v1/{universeId}/places/{placeId}/versions?versionType=Published
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Digite PUBLICAR para publicar a versão atual'
+        required: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.confirm == 'PUBLICAR' }}
+    environment: roblox-production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Testes antes de publicar
+        run: |
+          pip install lupa
+          python3 tests/harness.py
+          python3 tests/check_requires.py
+      - name: Verificar segredos
+        env:
+          ROBLOX_API_KEY: ${{ secrets.ROBLOX_API_KEY }}
+          ROBLOX_UNIVERSE_ID: ${{ secrets.ROBLOX_UNIVERSE_ID }}
+          ROBLOX_PLACE_ID: ${{ secrets.ROBLOX_PLACE_ID }}
+        run: |
+          if [ -z "$ROBLOX_API_KEY" ] || [ -z "$ROBLOX_UNIVERSE_ID" ] || [ -z "$ROBLOX_PLACE_ID" ]; then
+            echo "Configure ROBLOX_API_KEY, ROBLOX_UNIVERSE_ID e ROBLOX_PLACE_ID nos secrets do repositório."
+            exit 1
+          fi
+      - name: Gerar place
+        run: python3 tools/build_place.py CaseStrikeRNG.rbxlx
+      - name: Publicar via Open Cloud
+        env:
+          ROBLOX_API_KEY: ${{ secrets.ROBLOX_API_KEY }}
+          ROBLOX_UNIVERSE_ID: ${{ secrets.ROBLOX_UNIVERSE_ID }}
+          ROBLOX_PLACE_ID: ${{ secrets.ROBLOX_PLACE_ID }}
+        run: |
+          status=$(curl -sS -o response.json -w "%{http_code}" -X POST \
+            "https://apis.roblox.com/universes/v1/${ROBLOX_UNIVERSE_ID}/places/${ROBLOX_PLACE_ID}/versions?versionType=Published" \
+            -H "x-api-key: ${ROBLOX_API_KEY}" \
+            -H "Content-Type: application/xml" \
+            --data-binary @CaseStrikeRNG.rbxlx)
+          cat response.json
+          if [ "$status" != "200" ]; then
+            echo "Falha ao publicar (HTTP $status)"
+            exit 1
+          fi

@@ -8,6 +8,20 @@ local Net = {}
 
 local remotes = ReplicatedStorage:WaitForChild("Remotes")
 local busy = {} -- [remote .. action] = true
+local pending = 0
+local busyHandler = nil
+
+-- função chamada com true/false quando há (ou não) pedidos em andamento (indicador de carregamento)
+function Net.setBusyHandler(fn)
+	busyHandler = fn
+end
+
+local function setPending(delta)
+	pending = pending + delta
+	if busyHandler then
+		busyHandler(pending > 0)
+	end
+end
 
 function Net.remote(name)
 	return remotes:WaitForChild(name)
@@ -22,9 +36,11 @@ function Net.call(remoteName, payload)
 	end
 	busy[key] = true
 	payload.requestId = string.sub(HttpService:GenerateGUID(false), 1, 36)
+	setPending(1)
 	local okCall, response = pcall(function()
 		return Net.remote(remoteName):InvokeServer(payload)
 	end)
+	setPending(-1)
 	busy[key] = nil
 	if not okCall or type(response) ~= "table" then
 		return { ok = false, error = "network", message = "Falha de conexão. Tente novamente." }

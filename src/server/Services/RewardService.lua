@@ -15,13 +15,13 @@ local RewardService = {}
 function RewardService.init() end
 
 function RewardService.start()
-	Remotes.on("ProgressionAction", "claimDaily", "Progression", function(player)
+	Remotes.on("ClaimReward", "claimDaily", "Progression", function(player)
 		return PlayerDataService.run(player, function(profile, ctx)
 			return ProfileOps.claimDaily(profile, ctx)
 		end, { important = true })
 	end)
 
-	Remotes.on("ProgressionAction", "claimLevelReward", "Progression", function(player, payload)
+	Remotes.on("ClaimReward", "claimLevelReward", "Progression", function(player, payload)
 		if not Validate.int(payload.level, 1, 1000) then
 			return Remotes.fail("invalid_request", "Pedido inválido.")
 		end
@@ -30,7 +30,7 @@ function RewardService.start()
 		end, { important = true })
 	end)
 
-	Remotes.on("ProgressionAction", "claimAchievement", "Progression", function(player, payload)
+	Remotes.on("ClaimReward", "claimAchievement", "Progression", function(player, payload)
 		if not Validate.id(payload.achievementId, 32) then
 			return Remotes.fail("invalid_request", "Pedido inválido.")
 		end

@@ -133,7 +133,7 @@ test("perfil carrega com trava de sessão e envia fotografia", function()
 	truthy(rec and rec.lock and rec.lock.jobId == "job-A", "trava gravada")
 	local v = lastView(alice)
 	truthy(v, "DataUpdated enviado")
-	eq(v.credits, 150)
+	eq(v.credits, 500)
 	truthy(alice:FindFirstChild("leaderstats"))
 end)
 
@@ -141,13 +141,13 @@ test("abrir caixa via remote desconta e entrega", function()
 	local res = invoke(S, "RequestCaseOpen", alice, { action = "open", caseId = "urban", quantity = 1, requestId = "req-1" })
 	truthy(res.ok, tostring(res.message))
 	eq(#res.data.results, 1)
-	eq(S.pds.getProfile(alice).credits, 125)
+	eq(S.pds.getProfile(alice).credits, 475)
 end)
 
 test("pedido repetido (mesmo requestId) não cobra duas vezes", function()
 	local res = invoke(S, "RequestCaseOpen", alice, { action = "open", caseId = "urban", quantity = 1, requestId = "req-1" })
 	truthy(res.ok)
-	eq(S.pds.getProfile(alice).credits, 125)
+	eq(S.pds.getProfile(alice).credits, 475)
 end)
 
 test("intervalo mínimo entre aberturas é aplicado pelo servidor", function()
@@ -157,7 +157,7 @@ test("intervalo mínimo entre aberturas é aplicado pelo servidor", function()
 	local r2 = invoke(S, "RequestCaseOpen", alice, { action = "open", caseId = "urban", quantity = 1 })
 	eq(r2.ok, false)
 	eq(r2.error, "rate_limited")
-	eq(S.pds.getProfile(alice).credits, 100)
+	eq(S.pds.getProfile(alice).credits, 450)
 end)
 
 test("pedidos malformados são rejeitados sem alterar nada", function()
@@ -238,10 +238,10 @@ test("vários jogadores simultâneos não interferem", function()
 	M.addPlayer(cara)
 	M.advance(2)
 	local ra = invoke(S, "RequestCaseOpen", bob, { action = "open", caseId = "urban", quantity = 5 })
-	local rc = invoke(S, "RequestCaseOpen", cara, { action = "open", caseId = "tactical", quantity = 1 })
+	local rc = invoke(S, "RequestCaseOpen", cara, { action = "open", caseId = "starter", quantity = 1 })
 	truthy(ra.ok and rc.ok)
-	eq(S.pds.getProfile(bob).credits, 25)
-	eq(S.pds.getProfile(cara).credits, 75)
+	eq(S.pds.getProfile(bob).credits, 375)
+	eq(S.pds.getProfile(cara).credits, 490)
 	local n = 0
 	for _ in pairs(S.pds.getProfile(bob).inventory) do
 		n = n + 1
@@ -377,12 +377,34 @@ local UI = moduleCache[clientFolder.Controllers.UIController]
 local Store = moduleCache[clientFolder.Util.Store]
 
 local function guiRoot()
-	return alice2.PlayerGui:FindFirstChild("CaseStrikeUI")
+	return alice2.PlayerGui
+end
+-- procura primeiro nos diálogos e na roleta, depois nos painéis e por fim no HUD
+local function screensInOrder()
+	local first, last, middle = {}, {}, {}
+	for _, g in ipairs(alice2.PlayerGui:GetChildren()) do
+		if g.Name == "Dialogs" or g.Name == "CaseOpening" then
+			table.insert(first, g)
+		elseif g.Name == "MainHUD" or g.Name == "Toasts" then
+			table.insert(last, g)
+		else
+			table.insert(middle, g)
+		end
+	end
+	table.sort(first, function(a, b)
+		return a.Name == "Dialogs"
+	end)
+	local out = {}
+	for _, list in ipairs({ first, middle, last }) do
+		for _, g in ipairs(list) do
+			table.insert(out, g)
+		end
+	end
+	return out
 end
 local function findButton(text, plain)
-	local root = guiRoot():FindFirstChild("Root")
-	for _, layerName in ipairs({ "Modal", "Overlay", "Panels", "HUD" }) do
-		for _, d in ipairs(root:FindFirstChild(layerName):GetDescendants()) do
+	for _, screenGui in ipairs(screensInOrder()) do
+		for _, d in ipairs(screenGui:GetDescendants()) do
 			if d:IsA("TextButton") and d.Text and (d.Text == text or (plain and string.find(d.Text, text, 1, true))) then
 				local visible = true
 				local node = d
@@ -420,13 +442,15 @@ end
 
 test("cliente inicia sem erros e recebe a fotografia", function()
 	truthy(clientOk, tostring(clientErr))
-	truthy(guiRoot(), "ScreenGui criada")
+	for _, name in ipairs({ "MainHUD", "CaseOpening", "Dialogs" }) do
+		truthy(guiRoot():FindFirstChild(name), "ScreenGui " .. name)
+	end
 	truthy(Store.view, "fotografia recebida")
 	eq(Store.view.credits, 50000)
 end)
 
 test("todos os painéis abrem e atualizam sem erros", function()
-	for _, name in ipairs({ "Shop", "Inventory", "Bank", "Upgrade", "Index", "Missions", "Gifts", "Luck", "Attributes", "Rebirth", "Leaderboard", "Battle" }) do
+	for _, name in ipairs({ "Shop", "Inventory", "Bank", "Upgrade", "Collections", "Missions", "Gifts", "Luck", "Attributes", "Rebirth", "Leaderboard", "Battle" }) do
 		UI.open(name)
 		M.advance(0.3)
 		eq(UI.current, name)
@@ -440,13 +464,17 @@ end)
 test("apenas um painel aberto por vez", function()
 	UI.open("Shop")
 	UI.open("Bank")
+	M.advance(0.3) -- deixa terminar a animação de fechamento de painéis anteriores
 	local visible = 0
-	for _, f in ipairs(UI.layers.Panels:GetChildren()) do
-		if f.Visible then
+	for _, d in ipairs(guiRoot():GetDescendants()) do
+		if d.Name == "Panel" and d.Visible then
 			visible = visible + 1
 		end
 	end
 	eq(visible, 1)
+	for _, name in ipairs({ "CaseShop", "Bank", "Inventory", "UpgradeWorkshop", "Collections", "Missions", "Rewards", "Rankings" }) do
+		truthy(guiRoot():FindFirstChild(name), "ScreenGui " .. name)
+	end
 	UI.close()
 end)
 
@@ -499,7 +527,7 @@ test("fluxo: inventário → favoritar, equipar, depositar, retirar", function()
 	UI.open("Inventory")
 	M.advance(0.5)
 	local card
-	for _, d in ipairs(guiRoot():GetDescendants()) do
+	for _, d in ipairs(guiRoot():FindFirstChild("Inventory"):GetDescendants()) do
 		if d:IsA("TextButton") and d.Visible and d.Text == "" and d.LayoutOrder == 1 and d.Parent and d.Parent:FindFirstChild("UIGridLayout") then
 			card = d
 			break
@@ -556,7 +584,7 @@ test("fluxo: banco resgata e oficina aplica melhoria garantida", function()
 	M.advance(0.5)
 	click("Depositar")
 	M.epoch = M.epoch + 600
-	click("Resgatar créditos")
+	click("RESGATAR")
 	truthy(p.stats.bankClaimedTotal > 0, "resgatou")
 	UI.close()
 	local uid
@@ -593,6 +621,115 @@ test("HUD mostra patrimônio, saldo e nível atualizados", function()
 		end
 	end
 	truthy(found, "barra de XP com nível")
+end)
+
+test("V4: abrir ×25 mostra só a grade de prêmios (sem 25 animações)", function()
+	local p = profile()
+	p.attributes.multiOpen = 1
+	p.credits = p.credits + 5000
+	S2.pds.push(alice2)
+	M.advance(0.5)
+	local before = itemCount()
+	UI.open("CaseWindow", { caseId = "starter" })
+	M.advance(0.5)
+	click("×25")
+	click("ABRIR ×25")
+	click("Abrir")
+	M.advance(3)
+	eq(itemCount(), before + 25)
+	for _, d in ipairs(guiRoot():FindFirstChild("CaseOpening"):GetDescendants()) do
+		if d.Name == "Strip1" then
+			eq(d.Parent.Visible, false, "faixas da roleta ocultas no ×25")
+		end
+	end
+	truthy(findButton("✔ Guardar"), "grade de prêmios exibida")
+	click("✔ Guardar")
+end)
+
+test("V4: inspeção 3D com aproximar/afastar", function()
+	UI.open("Inventory")
+	M.advance(0.5)
+	local card
+	for _, d in ipairs(guiRoot():FindFirstChild("Inventory"):GetDescendants()) do
+		if d:IsA("TextButton") and d.Visible and d.Text == "" and d.LayoutOrder == 1 and d.Parent and d.Parent:FindFirstChild("UIGridLayout") then
+			card = d
+			break
+		end
+	end
+	card.Activated:Fire()
+	M.advance(0.3)
+	click("🔍 Inspecionar")
+	click("＋ Aproximar")
+	click("－ Afastar")
+	click("↺ Girar automático")
+	click("✕ Fechar inspeção")
+	eq(findButton("✕ Fechar inspeção"), nil)
+end)
+
+test("V4: expor no showroom cria a vitrine visível a todos", function()
+	truthy(alice2:GetAttribute("ShowroomBooth"), "vitrine atribuída")
+	local target
+	for uid, it in pairs(profile().inventory) do
+		if it.location == "inventory" and not it.showcase then
+			target = uid
+			break
+		end
+	end
+	UI.close(true)
+	UI.open("Inventory", { uid = target })
+	M.advance(0.5)
+	click("🖼 Expor no showroom")
+	M.advance(1)
+	local booth = workspace.Lobby.Showroom.Booths:FindFirstChild("Booth" .. alice2:GetAttribute("ShowroomBooth"))
+	local display = booth:FindFirstChild("Display")
+	truthy(display, "vitrine montada")
+	local pedestals = 0
+	for _, d in ipairs(display:GetChildren()) do
+		if d.Name == "Pedestal" then
+			pedestals = pedestals + 1
+		end
+	end
+	eq(pedestals, 1)
+	UI.close()
+end)
+
+test("V4: atributos pela interface e efeitos reduzidos", function()
+	local p = profile()
+	p.credits = p.credits + 100000
+	UI.open("Attributes")
+	M.advance(0.5)
+	local before = p.attributes.luck
+	click("Melhorar")
+	truthy(p.attributes.luck == before + 1 or p.bank.upgrades.efficiency > 0, "atributo comprado")
+	click("🌙 Reduzir efeitos visuais", true)
+	eq(p.settings.reduceEffects, true)
+	UI.close()
+end)
+
+test("V4: venda de Secreta exige confirmação explícita no servidor", function()
+	local p = profile()
+	local uid = "i" .. p.nextUid
+	p.nextUid = p.nextUid + 1
+	p.inventory[uid] = { uid = uid, defId = "phantom_05", obtainedAt = 0, favorite = false, equipped = false, location = "inventory", upgrades = {} }
+	local res = invoke(S2, "InventoryAction", alice2, { action = "sell", uids = { uid } })
+	eq(res.error, "valuable_locked")
+	truthy(p.inventory[uid])
+	local ok = invoke(S2, "InventoryAction", alice2, { action = "sell", uids = { uid }, confirmValuable = true })
+	truthy(ok.ok)
+end)
+
+test("V4: placa acima do personagem mostra nome, título, nível e patrimônio", function()
+	local character = M.instance("Model", "Alice")
+	local head = M.instance("Part", "Head")
+	head.Parent = character
+	M.instance("Part", "HumanoidRootPart").Parent = character
+	alice2.Character = character
+	alice2.CharacterAdded:Fire(character)
+	M.advance(0.5)
+	local plate = head:FindFirstChild("CollectorPlate")
+	truthy(plate, "placa criada")
+	eq(plate.PlayerName.Text, "Alice")
+	truthy(string.find(plate.Stats.Text, "Nv ", 1, true))
 end)
 
 test("nenhum aviso inesperado no cliente", function()

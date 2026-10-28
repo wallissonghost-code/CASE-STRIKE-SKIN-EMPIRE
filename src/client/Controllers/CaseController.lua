@@ -1,4 +1,6 @@
--- CaseController: pedidos de abertura e a roleta horizontal animada.
+-- CaseController: pedidos de abertura e a roleta horizontal animada, com efeitos por raridade
+-- (Rara azul, Épica roxa, Lendária dourada, Secreta com animação especial) e modo de efeitos reduzidos.
+-- Aberturas acima de MaxAnimatedStrips (×25) mostram direto a grade de prêmios (desempenho no celular).
 -- O servidor já decidiu o prêmio antes da animação; a roleta apenas desacelera até ele.
 -- Os itens de preenchimento da faixa são sorteados no cliente só para efeito visual.
 -- Elementos da roleta são reaproveitados (pool) entre aberturas.
@@ -14,6 +16,7 @@ local CaseDefinitions = require(Shared.Config.CaseDefinitions)
 local RarityConfig = require(Shared.Config.RarityConfig)
 local EconomyConfig = require(Shared.Config.EconomyConfig)
 local Probability = require(Shared.Logic.Probability)
+local AudioConfig = require(Shared.Config.AudioConfig)
 
 local UI = require(script.Parent.UIController)
 local Net = require(script.Parent.Parent.Util.Net)
@@ -178,8 +181,84 @@ local function fillerPicker(caseId)
 	end
 end
 
+local function playSound(key)
+	local id = AudioConfig.Sounds[key]
+	if not id or id == "" then
+		return -- sem ID configurado: não inventamos assets
+	end
+	local snd = Instance.new("Sound")
+	snd.SoundId = id
+	snd.Volume = AudioConfig.Volume
+	snd.Parent = workspace
+	snd:Play()
+	task.delay(6, function()
+		snd:Destroy()
+	end)
+end
+
+local function reducedEffects()
+	return Store.view and Store.view.settings.reduceEffects == true
+end
+
+-- efeito de tela conforme a maior raridade obtida
+local function rarityEffect(maxTier, rarityId)
+	local color = UI.rarityColor(rarityId)
+	playSound(rarityId)
+	if maxTier < 3 then
+		return -- Comum/Incomum: animação simples
+	end
+	local reduced = reducedEffects()
+	local flash = UI.frame({
+		Name = "RarityFlash",
+		BackgroundColor3 = color,
+		BackgroundTransparency = reduced and 0.85 or 0.55,
+		Size = UDim2.fromScale(1, 1),
+		ZIndex = 50,
+		Parent = overlay,
+	})
+	local glow = UI.make("UIStroke", { Color = color, Thickness = reduced and 4 or 14, Transparency = 0.1, Parent = stripArea })
+	if not reduced then
+		TweenService:Create(flash, TweenInfo.new(0.9, Enum.EasingStyle.Quad), { BackgroundTransparency = 1 }):Play()
+	end
+	if maxTier >= 5 and not reduced then
+		local banner = UI.text({
+			Name = "RarityBanner",
+			Text = maxTier >= 6 and "✦ SECRETA ✦" or "★ LENDÁRIA ★",
+			Font = UI.Fonts.title,
+			TextSize = maxTier >= 6 and 64 or 52,
+			TextColor3 = color,
+			TextStrokeTransparency = 0,
+			TextXAlignment = Enum.TextXAlignment.Center,
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromScale(0.5, 0.12),
+			Size = UDim2.fromOffset(700, 80),
+			ZIndex = 60,
+			Parent = overlay,
+		})
+		task.delay(1.6, function()
+			banner:Destroy()
+		end)
+	end
+	if maxTier >= 6 and not reduced then
+		-- Secreta: tremor da roleta e pulsos vermelhos
+		local base = stripArea.Position
+		for i = 1, 8 do
+			stripArea.Position = base + UDim2.fromOffset(rng:NextInteger(-10, 10), rng:NextInteger(-6, 6))
+			flash.BackgroundTransparency = (i % 2 == 0) and 0.5 or 0.8
+			task.wait(0.05)
+		end
+		stripArea.Position = base
+		TweenService:Create(flash, TweenInfo.new(0.6), { BackgroundTransparency = 1 }):Play()
+	end
+	task.delay(1.0, function()
+		flash:Destroy()
+		glow:Destroy()
+	end)
+end
+
 local function spin(result, fast)
 	local quantity = #result.results
+	local speed = (Store.view and Store.view.speedFactor) or 1
 	local rowHeight = quantity == 1 and 160 or (quantity == 5 and 92 or 48)
 	local cardWidth = quantity == 1 and 130 or (quantity == 5 and 104 or 92)
 	local gap = 6
@@ -193,6 +272,7 @@ local function spin(result, fast)
 	else
 		duration = EconomyConfig.Opening.MultiSpinSeconds
 	end
+	duration = duration * speed
 	local pick = fillerPicker(result.caseId)
 
 	for i, s in ipairs(strips) do
@@ -232,6 +312,16 @@ local function spin(result, fast)
 		end
 		RunService.RenderStepped:Wait()
 	end
+	-- efeito da maior raridade obtida
+	local maxTier, maxRarity = 0, "Common"
+	for _, r in ipairs(result.results) do
+		local def = SkinDefinitions.ById[r.defId]
+		local tier = RarityConfig.tier(def.rarity)
+		if tier > maxTier then
+			maxTier, maxRarity = tier, def.rarity
+		end
+	end
+	rarityEffect(maxTier, maxRarity)
 	-- destaca o vencedor
 	for i = 1, quantity do
 		local card = strips[i].cards[WINNER_INDEX]
@@ -271,8 +361,17 @@ local function showReveal(result, opts)
 		Position = UDim2.fromOffset(0, 12),
 		Parent = revealArea,
 	})
-	local grid = UI.frame({ BackgroundTransparency = 1, Position = UDim2.fromOffset(20, 60), Size = UDim2.new(1, -40, 1, -150), Parent = revealArea })
-	local cell = quantity == 1 and UDim2.fromOffset(360, 340) or (quantity == 5 and UDim2.fromOffset(160, 300) or UDim2.fromOffset(160, 150))
+	local grid = UI.scroll({ Position = UDim2.fromOffset(20, 60), Size = UDim2.new(1, -40, 1, -150), Parent = revealArea })
+	local cell
+	if quantity == 1 then
+		cell = UDim2.fromOffset(360, 340)
+	elseif quantity == 5 then
+		cell = UDim2.fromOffset(160, 300)
+	elseif quantity == 10 then
+		cell = UDim2.fromOffset(160, 150)
+	else
+		cell = UDim2.fromOffset(160, 140)
+	end
 	UI.make("UIGridLayout", {
 		CellSize = cell,
 		CellPadding = UDim2.fromOffset(10, 10),
@@ -287,8 +386,8 @@ local function showReveal(result, opts)
 		local card = UI.frame({ BackgroundColor3 = UI.Theme.panel2:Lerp(color, 0.2), LayoutOrder = i, Parent = grid })
 		UI.corner(card, 10)
 		UI.stroke(card, color, 2, 0.1)
-		local vpHeight = quantity == 10 and 70 or (quantity == 1 and 220 or 170)
-		local vp = UI.skinViewport(def, {}, UDim2.new(1, 0, 0, vpHeight), { spin = quantity < 10 })
+		local vpHeight = quantity >= 10 and 64 or (quantity == 1 and 220 or 170)
+		local vp = UI.skinViewport(def, {}, UDim2.new(1, 0, 0, vpHeight), { spin = quantity < 10 and not reducedEffects() })
 		vp.Parent = card
 		UI.text({
 			Text = def.name,
@@ -353,13 +452,25 @@ local function showReveal(result, opts)
 		Size = UDim2.fromOffset(230, 44),
 		Parent = row,
 		onClick = function()
+			local valuable, rare = false, false
+			for _, r in ipairs(result.results) do
+				local tier = RarityConfig.tier(SkinDefinitions.ById[r.defId].rarity)
+				if tier >= EconomyConfig.ValuableConfirmTier then
+					valuable = true
+				end
+				if tier >= EconomyConfig.RareWarnTier then
+					rare = true
+				end
+			end
+			local warn = valuable and "\n\n⚠️ Inclui skin LENDÁRIA ou SECRETA. Digite VENDER para confirmar." or (rare and "\n\n⚠️ Inclui skins Raras ou melhores." or "")
 			UI.confirm({
 				title = "Vender estas skins?",
-				message = "Você receberá ₵ " .. Format.int(total) .. ". Esta ação não pode ser desfeita.",
+				message = "Você receberá ₵ " .. Format.int(total) .. ". Esta ação não pode ser desfeita." .. warn,
 				confirmText = "Vender",
 				danger = true,
+				phrase = valuable and "VENDER" or nil,
 				onConfirm = function()
-					local res = Net.call("InventoryAction", { action = "sell", uids = uids })
+					local res = Net.call("InventoryAction", { action = "sell", uids = uids, confirmValuable = valuable })
 					if UI.handle(res, "Vendido por ₵ " .. Format.int(total)) then
 						CaseController.hide()
 					end
@@ -410,10 +521,25 @@ function CaseController.open(caseId, quantity, opts)
 	end
 	overlay.Visible = true
 	revealArea.Visible = false
-	stripArea.Visible = true
-	skipButton.Visible = true
-	spin(res.data, opts.fast)
-	skipButton.Visible = false
+	if #res.data.results > EconomyConfig.Opening.MaxAnimatedStrips then
+		-- muitas caixas: sem dezenas de animações, só um destaque rápido e a grade
+		stripArea.Visible = false
+		skipButton.Visible = false
+		local maxTier, maxRarity = 0, "Common"
+		for _, r in ipairs(res.data.results) do
+			local def = SkinDefinitions.ById[r.defId]
+			if RarityConfig.tier(def.rarity) > maxTier then
+				maxTier, maxRarity = RarityConfig.tier(def.rarity), def.rarity
+			end
+		end
+		task.wait(0.4)
+		rarityEffect(maxTier, maxRarity)
+	else
+		stripArea.Visible = true
+		skipButton.Visible = true
+		spin(res.data, opts.fast)
+		skipButton.Visible = false
+	end
 	showReveal(res.data, opts)
 	if res.data.levelsGained and res.data.levelsGained > 0 then
 		UI.toast("⬆️ Subiu de nível!", "good")

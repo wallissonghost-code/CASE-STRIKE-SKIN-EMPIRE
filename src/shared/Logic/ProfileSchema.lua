@@ -8,11 +8,12 @@ local BankConfig = require(Shared.Config.BankConfig)
 local SkinDefinitions = require(Shared.Config.SkinDefinitions)
 local CaseDefinitions = require(Shared.Config.CaseDefinitions)
 local ProgressionConfig = require(Shared.Config.ProgressionConfig)
+local AttributeConfig = require(Shared.Config.AttributeConfig)
 local BankMath = require(Shared.Logic.BankMath)
 
 local ProfileSchema = {}
 
-ProfileSchema.Version = 1
+ProfileSchema.Version = 2
 
 function ProfileSchema.new(now)
 	return {
@@ -29,13 +30,15 @@ function ProfileSchema.new(now)
 		bank = {
 			pending = 0,
 			lastTick = now,
-			upgrades = { slots = 0, efficiency = 0, storage = 0, display = 0 },
+			upgrades = { slots = 0, efficiency = 0, storage = 0, offline = 0, display = 0 },
 		},
 		discovered = {}, -- [defId] = timestamp da primeira obtenção
 		collectionsClaimed = {}, -- [collectionId] = true
 		achievements = {}, -- [id] = timestamp de desbloqueio
 		achievementsClaimed = {}, -- [id] = true
 		titles = { novato = true },
+		cosmetics = {}, -- [id] = true (molduras, vitrines e variantes de coleção)
+		attributes = { luck = 0, xpBonus = 0, openSpeed = 0, multiOpen = 0 },
 		equippedTitle = "novato",
 		missions = { day = -1, week = -1, daily = {}, weekly = {}, progress = {}, claimed = {} },
 		eventProgress = { eventId = "", progress = {}, claimed = {} },
@@ -51,7 +54,7 @@ function ProfileSchema.new(now)
 			bankClaimedTotal = 0,
 			bestDropValue = 0,
 		},
-		settings = { fastOpen = false },
+		settings = { fastOpen = false, reduceEffects = false },
 		txLog = {}, -- últimas transações (anel)
 		txSeq = 0,
 	}
@@ -208,6 +211,33 @@ function ProfileSchema.validate(profile, now)
 		profile.bank.lastTick = now
 	end
 
+	-- atributos dentro dos limites (os vinculados ao banco ficam em bank.upgrades)
+	for id, attr in pairs(AttributeConfig.Attributes) do
+		if not attr.linkedBankUpgrade then
+			local lvl = profile.attributes[id] or 0
+			if not isInteger(lvl) or lvl < 0 then
+				lvl = 0
+			end
+			if lvl > attr.maxLevel then
+				issue("atributo acima do limite: " .. id)
+				lvl = attr.maxLevel
+			end
+			profile.attributes[id] = lvl
+		end
+	end
+
+	-- showroom: só skins no inventário e dentro do limite de vagas
+	local shown = 0
+	for _, item in pairs(profile.inventory) do
+		if item.showcase then
+			if item.location ~= "inventory" or shown >= EconomyConfig.ShowcaseSlots then
+				item.showcase = nil
+			else
+				shown = shown + 1
+			end
+		end
+	end
+
 	-- equipamentos dentro do limite
 	local maxEquip = ProfileSchema.equipSlots(profile)
 	if equippedCount > maxEquip then
@@ -223,7 +253,12 @@ function ProfileSchema.validate(profile, now)
 		end
 	end
 
-	if profile.equippedTitle and not profile.titles[profile.equippedTitle] then
+	for id in pairs(profile.titles) do
+		if not ProgressionConfig.Titles[id] then
+			profile.titles[id] = nil -- título removido do jogo
+		end
+	end
+	if not profile.equippedTitle or not profile.titles[profile.equippedTitle] then
 		profile.equippedTitle = "novato"
 		profile.titles.novato = true
 	end

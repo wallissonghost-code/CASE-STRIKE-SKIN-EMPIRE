@@ -1,0 +1,30 @@
+name: CI
+
+# Testes automáticos do CASE STRIKE RNG a cada push e pull request.
+# Executa: verificação de sintaxe, testes de lógica, servidor + cliente em Roblox simulado,
+# verificação de requires e gera o place .rbxlx como artefato para baixar e abrir no Studio.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Instalar dependências de teste
+        run: pip install lupa
+      - name: Testes (sintaxe, lógica, servidor e cliente simulados)
+        run: python3 tests/harness.py
+      - name: Verificar requires
+        run: python3 tests/check_requires.py
+      - name: Gerar place .rbxlx
+        run: python3 tools/build_place.py CaseStrikeRNG.rbxlx
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CaseStrikeRNG-place
+          path: CaseStrikeRNG.rbxlx

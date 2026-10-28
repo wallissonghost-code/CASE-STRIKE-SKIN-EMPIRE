@@ -3,7 +3,7 @@
 
 local EconomyConfig = {}
 
-EconomyConfig.StartingCredits = 150
+EconomyConfig.StartingCredits = 500
 EconomyConfig.MaxCredits = 1e12 -- teto de segurança contra overflow/exploits
 
 -- Venda ao sistema: fração do valor da skin.
@@ -25,6 +25,14 @@ EconomyConfig.Materials = {
 	core = { id = "core", displayName = "Núcleo Polido" },
 }
 
+-- Confirmação extra: vender skins a partir desta raridade exige confirmação explícita
+-- (Lendária e Secreta). A partir de RareWarnTier a interface mostra um aviso adicional.
+EconomyConfig.ValuableConfirmTier = 5
+EconomyConfig.RareWarnTier = 3
+
+-- Showroom: skins escolhidas para exposição (cosmético, sem vantagem econômica)
+EconomyConfig.ShowcaseSlots = 6
+
 -- Inventário
 EconomyConfig.InventoryCapacity = 500
 EconomyConfig.BaseEquipSlots = 3
@@ -35,6 +43,8 @@ EconomyConfig.Opening = {
 	NormalSpinSeconds = 5.5,
 	FastSpinSeconds = 1.6,
 	MultiSpinSeconds = 3.0,
+	-- acima desta quantidade não há faixas animadas: só a grade de prêmios (desempenho no celular)
+	MaxAnimatedStrips = 10,
 	-- intervalo mínimo entre aberturas (servidor), por modo
 	MinIntervalNormal = 1.0,
 	MinIntervalFast = 0.9,

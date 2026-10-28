@@ -1,36 +1,47 @@
-# Testes obrigatórios
+# Registro de testes — V4.0
 
-Situação de cada um dos 18 testes da especificação. "Automático" = coberto por `python3 tests/harness.py`.
+Executados com `python3 tests/harness.py` em 28/10/2026: **50 testes de lógica e 35 de servidor+cliente, todos passando**, mais `tests/check_requires.py` sem erros.
 
-| # | Teste | Como é verificado | Situação |
+"Simulado" = servidor (`Main.server.lua`) e cliente (`Main.client.lua`) reais rodando em `tests/roblox_mock.lua`, com DataStore em memória (inclusive falhas), relógio virtual e cliques reais nos botões da interface. Não substitui o Roblox Studio: itens marcados ⚠️ precisam do roteiro manual abaixo.
+
+| # | Teste obrigatório | Evidência automática | Resultado |
 |---|---|---|---|
-| 1 | Inventário persiste | `spec [1]` (ida e volta no formato do DataStore) e `server_smoke` "inventário e saldo persistem após reinício" | Automático ✅ |
-| 2 | Cada abertura entrega o prêmio sorteado | `spec [2]` compara cada resultado com o sorteio esperado; fluxo de UI "loja → ABRIR → roleta → item no inventário" | Automático ✅ |
-| 3 | Sem cobranças duplicadas | `spec [3]`; `server_smoke` "pedido repetido (mesmo requestId) não cobra duas vezes" | Automático ✅ |
-| 4 | Abertura múltipla | `spec [4]`, `[4b]`, `[4c]`; fluxo de UI "abrir ×10" | Automático ✅ |
-| 5 | Abertura automática pode ser interrompida | `spec [5]`; `server_smoke` "abertura automática respeita início/parada"; fluxo de UI com botão PARAR | Automático ✅ |
-| 6 | Venda não duplica créditos | `spec [6]`, `[6b]`; `server_smoke` "venda via remote e proteção contra repetição" | Automático ✅ |
-| 7 | Banco não duplica skins | `spec [7]` | Automático ✅ |
-| 8 | Renda calculada corretamente | `spec [8]`, `[8b]` | Automático ✅ |
-| 9 | Limite de produção offline | `spec [9]` | Automático ✅ |
-| 10 | Patrimônio sem dupla contagem | `spec [10]` | Automático ✅ |
-| 11 | Renascimento preserva o prometido | `spec [11]` | Automático ✅ |
-| 12 | Oficina não consome sem entregar | `spec [12]`; fluxo de UI da oficina | Automático ✅ |
-| 13 | Missões sem resgate repetido | `spec [13]`–`[13d]` (missões, diário, nível, coleção, conquista) | Automático ✅ |
-| 14 | Rankings consistentes | `spec [14]`; ranking do servidor em `server_smoke` | Automático ✅ |
-| 15 | HUD em computador e celular | Fluxo de UI confirma criação e atualização do HUD. **Conferir no Studio** em *Test → Device* (celular paisagem 800×360, tablet e 1920×1080): nada cortado, botões tocáveis | Manual ⚠️ |
-| 16 | PvP e monstros bloqueados | `spec [16]` (FeatureFlags); nenhum serviço de combate é carregado em `Main.server.lua` | Automático ✅ |
-| 17 | Proteção contra desconexão | `server_smoke`: desconexão grava e libera trava, perfil travado por outro servidor não é carregado, trava perdida impede sobrescrever, falhas temporárias são repetidas, `BindToClose` | Automático ✅ (confirmar também em servidor publicado) |
-| 18 | Sem erros críticos multiplayer | `server_smoke` "vários jogadores simultâneos". **Conferir no Studio** com *Test → Clients and Servers* (3 jogadores) observando o Output | Parcial ⚠️ |
+| 1 | Entrada e carregamento de dados | "perfil carrega com trava de sessão e envia fotografia", "cliente inicia sem erros e recebe a fotografia" | ✅ simulado |
+| 2 | Saldo inicial | `preços e níveis das 12 caixas` (500 créditos); fotografia inicial com ₵ 500 | ✅ |
+| 3 | Compra de caixas | `[3] sem cobranças duplicadas`, "abrir caixa via remote desconta e entrega", níveis de bloqueio | ✅ |
+| 4 | Sorteio correto | `[2]` (cada abertura entrega o sorteado), simulação de 200 mil sorteios, validador de RNG, soma 100% com e sem sorte | ✅ |
+| 5 | Animação da roleta | fluxo de UI "loja → ABRIR → roleta → item no inventário" | ✅ simulado ⚠️ visual no Studio |
+| 6 | Abertura múltipla | `[4]` atômica, `[4b]` inventário cheio, ×10 pela UI, ×25 com atributo (lógica e UI, sem faixas animadas) | ✅ |
+| 7 | Abertura automática | `[5]` limites e parada; remotes start/stop; botão PARAR na UI | ✅ |
+| 8 | Venda de skins | `[6]`, `[6b]` favoritas, venda de Secreta exige confirmação (lógica e remote) | ✅ |
+| 9 | Depósito no banco | `[7]` sem duplicar; vagas; depósito pela UI | ✅ |
+| 10 | Resgate da renda | `[8]`, resgate pelo remote e pela UI | ✅ |
+| 11 | Produção offline | `[9]` limite e cofre; "limite offline aumenta com a melhoria"; relógio voltando não gera créditos | ✅ |
+| 12 | Cálculo de patrimônio | `[10]` sem dupla contagem, pendente incluído uma vez, resgate não altera | ✅ |
+| 13 | Inspeção 3D | fluxo de UI: inspecionar, aproximar, afastar, giro automático, fechar | ✅ simulado ⚠️ arrastar no Studio |
+| 14 | Melhorias | `[12]` não consome sem entregar; variante de coleção; oficina pela UI | ✅ |
+| 15 | Progressão de XP | curva gradual, limite diário, bônus de XP, títulos por nível, XP de conquistas | ✅ |
+| 16 | Renascimento | `[11]` preserva raras, favoritas, índice e conquistas; confirmação digitada | ✅ |
+| 17 | Missões | `[13]`, `[13b]`, missões de coleção e nível, sem resgate repetido | ✅ |
+| 18 | Presentes | `[13c]` diário e de nível sem duplicar; presente diário pela UI | ✅ |
+| 19 | Coleções | `[13d]` recompensa única, título e cosméticos; variante exclusiva | ✅ |
+| 20 | Rankings | `[14]` consistentes (incluindo renda do banco); ranking do servidor via remote | ✅ |
+| 21 | Reconexão após falha | falhas temporárias de DataStore repetidas; desconexão libera trava; reinício do servidor mantém inventário e saldo | ✅ simulado |
+| 22 | Proteção contra duplicação | `requestId` repetido não cobra duas vezes; venda repetida falha; perfil travado por outro servidor não é carregado; trava perdida impede sobrescrever | ✅ |
+| 23 | Interface mobile | ScreenGuis com UIScale (1280×720 base) criadas e todos os painéis abrem | ⚠️ conferir no emulador de dispositivos |
+| 24 | Uso de memória | sem medição automática | ⚠️ medir no Studio (Developer Console → Memory) |
+| 25 | Servidores com vários jogadores | "vários jogadores simultâneos não interferem" (3 jogadores) | ✅ simulado ⚠️ confirmar com Clients and Servers |
 
-## Roteiro manual no Studio
+PvP, monstros e combate: `[16]` confirma todos os bloqueios em `FeatureFlags` e nenhum serviço de combate é carregado.
 
-1. Ativar *Enable Studio Access to API Services*; dar Play e confirmar no Output `[CASE STRIKE] servidor pronto` sem aviso de MODO MEMÓRIA.
-2. Abrir cada botão dos dois menus laterais; Batalha deve mostrar "EM BREVE".
-3. Abrir Urban ×1, ×5 e ×10, com e sem modo rápido; pular a animação; vender pela revelação.
-4. Iniciar a abertura automática e parar pelo botão; zerar o saldo durante o automático e ver a parada sozinha.
-5. Depositar 3 skins, sair do jogo, voltar alguns minutos depois e conferir que o acumulado cresceu (até o limite do cofre).
-6. Favoritar uma skin e tentar vendê-la: deve exigir digitar `VENDER`.
-7. Aplicar uma melhoria na oficina e conferir o efeito no modelo do inventário e no personagem (se equipada).
-8. Em *Test → Clients and Servers* com 3 jogadores: abrir caixas ao mesmo tempo, ver anúncios de drops raros e o ranking do servidor.
-9. Emulador de dispositivo em celular: checar HUD, roleta e painéis.
+## Roteiro manual no Roblox Studio
+
+1. Gerar `CaseStrike.rbxlx` (`python3 tools/build_place.py`), abrir e dar Play. O Output deve mostrar `[CASE STRIKE] servidor pronto` sem avisos de validação.
+2. Publicar o place, ativar *Enable Studio Access to API Services*, sair e voltar: saldo e inventário devem persistir.
+3. Abrir cada botão dos menus; Batalha e portais mostram "EM BREVE".
+4. Abrir Starter ×1, ×5, ×10 e ×25 (após comprar o atributo); testar modo rápido, pular animação, reduzir efeitos e abertura automática com PARAR.
+5. Inspecionar uma skin: arrastar para girar, roda do mouse para aproximar.
+6. Depositar skins, sair por alguns minutos e voltar: o acumulado cresce até o cofre e o limite offline.
+7. Expor skins no showroom e visitar a vitrine com outro jogador (*Test → Clients and Servers*, 3 jogadores).
+8. Emulador de dispositivos (celular paisagem, tablet, 1920×1080): nada cortado, botões tocáveis.
+9. Developer Console → Memory: acompanhar memória após 10 minutos de abertura automática.

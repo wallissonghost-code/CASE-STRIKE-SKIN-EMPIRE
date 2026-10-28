@@ -1,10 +1,11 @@
 -- LeaderboardStats: valores enviados aos rankings, derivados de uma única fonte (o perfil).
--- Patrimônio usa Wealth (cada skin contada uma vez; créditos pendentes do banco NÃO entram,
--- assim a renda do banco só é contada depois de resgatada, uma única vez).
+-- Patrimônio usa Wealth (cada skin contada uma vez; pendente do banco contado uma vez —
+-- resgatar só move o valor para o saldo, então o ranking não muda nem duplica).
 
 local Shared = script.Parent.Parent
 local Wealth = require(Shared.Logic.Wealth)
 local ProfileOps = require(Shared.Logic.ProfileOps)
+local BankMath = require(Shared.Logic.BankMath)
 
 local LeaderboardStats = {}
 
@@ -14,6 +15,7 @@ LeaderboardStats.Boards = {
 	{ id = "unique", displayName = "Skins únicas" },
 	{ id = "collections", displayName = "Coleções concluídas" },
 	{ id = "achievements", displayName = "Conquistas" },
+	{ id = "bankIncome", displayName = "Renda do banco" },
 }
 
 function LeaderboardStats.compute(profile)
@@ -28,6 +30,8 @@ function LeaderboardStats.compute(profile)
 		unique = ProfileOps.statValue(profile, "uniqueDiscovered"),
 		collections = ProfileOps.statValue(profile, "collectionsCompleted"),
 		achievements = achievements,
+		-- renda em centésimos de crédito/s (OrderedDataStore guarda inteiros)
+		bankIncome = math.floor(BankMath.totalRate(profile) * 100 + 0.5),
 	}
 end
 

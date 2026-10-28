@@ -5,9 +5,10 @@ local Shared = script.Parent.Parent
 local BankConfig = require(Shared.Config.BankConfig)
 local ProgressionConfig = require(Shared.Config.ProgressionConfig)
 local MissionDefinitions = require(Shared.Config.MissionDefinitions)
-local EventConfig = require(Shared.Config.EventConfig)
+local EventDefinitions = require(Shared.Config.EventDefinitions)
 local AchievementDefinitions = require(Shared.Config.AchievementDefinitions)
 local EconomyConfig = require(Shared.Config.EconomyConfig)
+local AttributeConfig = require(Shared.Config.AttributeConfig)
 local BankMath = require(Shared.Logic.BankMath)
 local Wealth = require(Shared.Logic.Wealth)
 local Progression = require(Shared.Logic.Progression)
@@ -40,6 +41,7 @@ function ClientView.build(profile, now, playerName)
 			location = item.location,
 			obtainedAt = item.obtainedAt,
 			upgrades = copyMap(item.upgrades),
+			showcase = item.showcase == true,
 			income = item.location == "bank" and BankMath.itemIncome(profile, item) or 0,
 		})
 	end
@@ -57,6 +59,11 @@ function ClientView.build(profile, now, playerName)
 			cost = lvl < u.maxLevel and BankMath.upgradeCost(id, lvl) or nil,
 			requiredLevel = lvl < u.maxLevel and u.requiredLevel(lvl) or nil,
 		})
+	end
+
+	local attributes = {}
+	for _, id in ipairs(AttributeConfig.Order) do
+		table.insert(attributes, ProfileOps.attributeInfo(profile, id))
 	end
 
 	local function missionList(ids)
@@ -77,7 +84,7 @@ function ClientView.build(profile, now, playerName)
 		return out
 	end
 
-	local ev = EventConfig.activeEvent(now)
+	local ev = EventDefinitions.activeEvent(now)
 	local eventView = nil
 	if ev then
 		local challenges = {}
@@ -101,7 +108,7 @@ function ClientView.build(profile, now, playerName)
 			challenges = challenges,
 		}
 	end
-	local nextEv = EventConfig.nextEvent(now)
+	local nextEv = EventDefinitions.nextEvent(now)
 
 	local luckTotal, luckList = ProfileOps.activeLuck(profile, now)
 
@@ -140,6 +147,11 @@ function ClientView.build(profile, now, playerName)
 		items = items,
 		inventoryCapacity = EconomyConfig.InventoryCapacity,
 		equipSlots = ProfileSchema.equipSlots(profile),
+		showcaseSlots = EconomyConfig.ShowcaseSlots,
+		attributes = attributes,
+		maxQuantity = AttributeConfig.maxQuantity(profile.attributes.multiOpen),
+		speedFactor = AttributeConfig.speedFactor(profile.attributes.openSpeed),
+		cosmetics = copyMap(profile.cosmetics),
 		materials = copyMap(profile.materials),
 		freeCases = copyMap(profile.freeCases),
 		bank = {
@@ -148,7 +160,8 @@ function ClientView.build(profile, now, playerName)
 			storageCap = BankMath.storageCap(profile),
 			rate = BankMath.totalRate(profile),
 			efficiency = BankMath.efficiency(profile),
-			maxOfflineSeconds = BankConfig.MaxOfflineSeconds,
+			maxOfflineSeconds = BankMath.offlineCap(profile),
+			maxSlotsShown = BankConfig.MaxSlotsShown,
 			upgrades = upgrades,
 		},
 		discovered = copyMap(profile.discovered),

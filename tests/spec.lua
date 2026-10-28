@@ -143,29 +143,49 @@ end
 
 print("== Conteúdo e configuração ==")
 
-test("60 skins e 6 caixas com 10 skins cada", function()
+test("60 skins e 12 caixas com 5 skins cada", function()
 	eq(SkinDefinitions.Count, 60)
-	eq(#CaseDefinitions.List, 6)
+	eq(#CaseDefinitions.List, 12)
 	for _, c in ipairs(CaseDefinitions.List) do
-		eq(#c.drops, 10, "skins na caixa " .. c.id)
+		eq(#c.drops, 5, "skins na caixa " .. c.id)
 	end
 	local cats = {}
 	for _, s in ipairs(SkinDefinitions.List) do
 		cats[s.category] = true
 		truthy(RarityConfig.Rarities[s.rarity], "raridade inválida")
 		truthy(s.value >= 1, "valor")
-		truthy(s.visual.placeholderModel, "modelo provisório marcado")
 	end
 	for _, c in ipairs({ "Pistol", "SMG", "Rifle", "Sniper", "Knife" }) do
 		truthy(cats[c], "categoria ausente " .. c)
 	end
 end)
 
-test("preços iniciais das caixas", function()
-	local expect = { urban = 25, tactical = 75, neon = 200, shadow = 600, elite = 1500, imperial = 5000 }
+test("preços e níveis das 12 caixas", function()
+	local expect = { starter = 10, urban = 25, tactical = 75, neon = 150, shadow = 300, chrome = 600, phantom = 1200, elite = 2500, diamond = 5000, royal = 12000, mythic = 30000, infinity = 100000 }
 	for id, price in pairs(expect) do
 		eq(CaseDefinitions.ById[id].price, price, id)
 	end
+	local levels = { starter = 1, neon = 5, elite = 20, royal = 40, infinity = 75 }
+	for id, lvl in pairs(levels) do
+		eq(CaseDefinitions.ById[id].requiredLevel, lvl, "nível " .. id)
+	end
+	eq(EconomyConfig.StartingCredits, 500)
+end)
+
+test("validador de RNG não encontra erros", function()
+	local DropValidator = shared_module("Logic/DropValidator")
+	local errors = DropValidator.validate()
+	eq(#errors, 0, table.concat(errors, "; "))
+end)
+
+test("validador detecta skin inexistente e peso inválido", function()
+	local DropValidator = shared_module("Logic/DropValidator")
+	local c = CaseDefinitions.ById.starter
+	local saved = c.drops[1]
+	c.drops[1] = { skinId = "nao_existe", rarity = "Common", weight = -1 }
+	local errors, bad = DropValidator.validate()
+	c.drops[1] = saved
+	truthy(#errors >= 2 and bad.starter, "erros detectados")
 end)
 
 test("probabilidades somam 100% com e sem sorte", function()
@@ -188,13 +208,14 @@ test("probabilidades somam 100% com e sem sorte", function()
 end)
 
 test("sorte aumenta raras, mantém soma e respeita teto", function()
-	local c = CaseDefinitions.ById.neon
+	local c = CaseDefinitions.ById.phantom
 	local base = Probability.byRarity(Probability.computeTable(c, 0))
 	local lucky = Probability.byRarity(Probability.computeTable(c, 0.25))
 	local capped = Probability.byRarity(Probability.computeTable(c, 99))
-	truthy(lucky.Secret > base.Secret and lucky.Common < base.Common)
+	truthy(lucky.Secret > base.Secret and lucky.Uncommon < base.Uncommon)
 	near(capped.Secret, lucky.Secret, 1e-12, "teto de sorte")
 end)
+
 
 test("valor esperado de cada caixa entre 80% e 95% do preço", function()
 	for _, c in ipairs(CaseDefinitions.List) do
@@ -300,13 +321,14 @@ end)
 
 test("[4c] caixas grátis e bloqueio por nível", function()
 	local p = fresh()
+	p.level = 3
 	p.freeCases.tactical = 1
 	local before = p.credits
 	local ok, res = ProfileOps.openCases(p, ctx(), "tactical", 1, { useFree = true })
 	truthy(ok and res.usedFree)
 	eq(p.credits, before)
 	eq(p.freeCases.tactical, nil)
-	local ok2, code2 = ProfileOps.openCases(p, ctx(), "imperial", 1, {})
+	local ok2, code2 = ProfileOps.openCases(p, ctx(), "infinity", 1, {})
 	eq(ok2, false)
 	eq(code2, "level_locked")
 end)
@@ -340,13 +362,16 @@ end)
 
 test("[6] venda não duplica créditos", function()
 	local p = fresh()
-	local uid = giveItem(p, "urban_10") -- secreta
-	local value = SkinDefinitions.ById.urban_10.value
+	local uid = giveItem(p, "phantom_05") -- secreta
+	local value = SkinDefinitions.ById.phantom_05.value
 	local before = p.credits
-	local ok = ProfileOps.sellItems(p, ctx(), { uid }, false)
+	local okV, codeV = ProfileOps.sellItems(p, ctx(), { uid }, false, false)
+	eq(codeV, "valuable_locked", "secreta exige confirmação")
+	eq(p.credits, before)
+	local ok = ProfileOps.sellItems(p, ctx(), { uid }, false, true)
 	truthy(ok)
 	eq(p.credits, before + value)
-	local ok2, code2 = ProfileOps.sellItems(p, ctx(), { uid }, false)
+	local ok2, code2 = ProfileOps.sellItems(p, ctx(), { uid }, false, true)
 	eq(ok2, false)
 	eq(code2, "invalid_item")
 	eq(p.credits, before + value)
@@ -370,7 +395,7 @@ end)
 
 test("[7] banco não duplica skins", function()
 	local p = fresh()
-	local uid = giveItem(p, "neon_09")
+	local uid = giveItem(p, "neon_05")
 	local n = count(p.inventory)
 	truthy(ProfileOps.deposit(p, ctx(), uid))
 	eq(count(p.inventory), n)
@@ -395,7 +420,7 @@ end)
 
 test("[8] renda calculada corretamente", function()
 	local p = fresh()
-	local def = SkinDefinitions.ById.elite_09
+	local def = SkinDefinitions.ById.elite_04
 	local uid = giveItem(p, def.id)
 	ProfileOps.deposit(p, ctx(NOW), uid)
 	local rate = BankMath.baseIncome(def) * BankMath.efficiency(p)
@@ -423,13 +448,13 @@ end)
 test("[9] banco respeita limite de produção offline e teto do cofre", function()
 	local p = fresh()
 	p.bank.upgrades.storage = 8
-	local uid = giveItem(p, "imperial_10")
+	local uid = giveItem(p, "infinity_05")
 	ProfileOps.deposit(p, ctx(NOW), uid)
 	local rate = BankMath.totalRate(p)
 	BankMath.settle(p, NOW + 48 * 3600)
 	near(p.bank.pending, math.min(rate * BankConfig.MaxOfflineSeconds, BankMath.storageCap(p)), 1e-6)
 	local p2 = fresh()
-	ProfileOps.deposit(p2, ctx(NOW), giveItem(p2, "imperial_10"))
+	ProfileOps.deposit(p2, ctx(NOW), giveItem(p2, "infinity_05"))
 	BankMath.settle(p2, NOW + 48 * 3600)
 	eq(p2.bank.pending, BankMath.storageCap(p2), "teto do cofre")
 	-- relógio voltando não gera créditos
@@ -441,27 +466,33 @@ end)
 test("[10] patrimônio não conta itens duas vezes", function()
 	local p = fresh()
 	p.credits = 1000
-	local a = giveItem(p, "urban_09")
-	local b = giveItem(p, "urban_10")
+	local a = giveItem(p, "neon_05")
+	local b = giveItem(p, "phantom_05")
 	local c = giveItem(p, "urban_01")
 	ProfileOps.equip(p, ctx(), a)
 	ProfileOps.deposit(p, ctx(), b)
 	local w = Wealth.compute(p)
-	local va = SkinDefinitions.ById.urban_09.value
-	local vb = SkinDefinitions.ById.urban_10.value
+	local va = SkinDefinitions.ById.neon_05.value
+	local vb = SkinDefinitions.ById.phantom_05.value
 	local vc = SkinDefinitions.ById.urban_01.value
 	eq(w.netWorth, 1000 + va + vb + vc)
 	eq(w.equipValue, va)
 	eq(w.bankValue, vb)
 	BankMath.settle(p, NOW + 3600)
-	eq(Wealth.compute(p).netWorth, w.netWorth, "pendente do banco não entra")
+	local w2 = Wealth.compute(p)
+	eq(w2.netWorth, w.netWorth + math.floor(p.bank.pending), "pendente entra uma vez")
+	local before = w2.netWorth
+	ProfileOps.claimBank(p, ctx(NOW + 3600))
+	local w3 = Wealth.compute(p)
+	truthy(math.abs(w3.netWorth - before) <= 0, "resgate não altera o patrimônio")
 end)
 
 test("[11] renascimento preserva o prometido", function()
 	local p = fresh()
-	p.level = 20
-	p.credits = 30000
-	local keepEpic = giveItem(p, "urban_08")
+	p.level = 25
+	p.credits = 60000
+	local keepEpic = giveItem(p, "urban_05")
+	local keepRare = giveItem(p, "urban_04")
 	local keepFav = giveItem(p, "urban_01")
 	ProfileOps.setFavorite(p, ctx(), keepFav, true)
 	local lose = giveItem(p, "urban_02")
@@ -472,15 +503,15 @@ test("[11] renascimento preserva o prometido", function()
 	eq(code, "confirmation_required")
 	local preview = ProfileOps.rebirthPreview(p, NOW)
 	truthy(preview.canRebirth)
-	eq(preview.keepItems.count, 2)
+	eq(preview.keepItems.count, 3)
 	eq(preview.loseItems.count, 1)
 	truthy(ProfileOps.rebirth(p, ctx(), "RENASCER"))
-	truthy(p.inventory[keepEpic] and p.inventory[keepFav])
+	truthy(p.inventory[keepEpic] and p.inventory[keepFav] and p.inventory[keepRare], "raras preservadas")
 	eq(p.inventory[lose], nil)
 	truthy(p.discovered.urban_02, "índice preservado")
 	truthy(p.achievements.a_open1 and p.collectionsClaimed.urban)
 	eq(p.rebirths, 1)
-	eq(p.level, 1)
+	truthy(p.level <= 2, "nível reiniciado (a conquista de renascimento concede XP)")
 	eq(p.credits, EconomyConfig.StartingCredits)
 	truthy(p.titles.renascido)
 	local ok2, code2 = ProfileOps.rebirth(p, ctx(), "RENASCER")
@@ -489,25 +520,25 @@ end)
 
 test("[12] oficina não consome recursos sem entregar o resultado", function()
 	local p = fresh()
-	local uid = giveItem(p, "urban_06")
+	local uid = giveItem(p, "urban_04")
 	p.credits = 10000
 	local snapshot = serialize(p)
-	local ok, code = ProfileOps.applyUpgrade(p, ctx(), uid, "glow")
+	local ok, code = ProfileOps.applyUpgrade(p, ctx(), uid, "holo")
 	eq(code, "insufficient_materials")
 	eq(serialize(p), snapshot)
 	p.materials.scrap = 50
 	p.materials.pigment = 10
-	local quote = ProfileOps.upgradeQuote(p, uid, "glow")
+	local quote = ProfileOps.upgradeQuote(p, uid, "holo")
 	local before = p.credits
-	ok = ProfileOps.applyUpgrade(p, ctx(), uid, "glow")
+	ok = ProfileOps.applyUpgrade(p, ctx(), uid, "holo")
 	truthy(ok)
-	truthy(p.inventory[uid].upgrades.glow, "resultado entregue")
+	truthy(p.inventory[uid].upgrades.holo, "resultado entregue")
 	eq(p.credits, before - quote.credits)
 	eq(p.materials.scrap, 40)
-	eq(p.materials.pigment, 8)
-	local ok2, code2 = ProfileOps.applyUpgrade(p, ctx(), uid, "glow")
+	eq(p.materials.pigment, 7)
+	local ok2, code2 = ProfileOps.applyUpgrade(p, ctx(), uid, "holo")
 	eq(code2, "already_upgraded")
-	local ok3, code3 = ProfileOps.applyUpgrade(p, ctx(), giveItem(p, "urban_01"), "variant")
+	local ok3, code3 = ProfileOps.applyUpgrade(p, ctx(), giveItem(p, "urban_01"), "gold")
 	eq(code3, "rarity_too_low")
 end)
 
@@ -571,7 +602,7 @@ test("[13c] presente diário e de nível sem resgate duplicado", function()
 	truthy(ProfileOps.claimLevelReward(p, ctx(), 5))
 	ok, code = ProfileOps.claimLevelReward(p, ctx(), 5)
 	eq(code, "already_claimed")
-	truthy(p.titles.cacador)
+	truthy(p.rewards.levelClaimed["5"])
 end)
 
 test("[13d] coleção e conquistas com resgate único", function()
@@ -582,6 +613,8 @@ test("[13d] coleção e conquistas com resgate único", function()
 	ProfileOps.checkAchievements(p, NOW)
 	truthy(p.achievements.a_col1)
 	truthy(ProfileOps.claimCollection(p, ctx(), "urban"))
+	truthy(p.cosmetics.frame_urban and p.cosmetics.showcase_urban and p.cosmetics.variant_urban, "cosméticos da coleção")
+	truthy(p.titles.grafiteiro, "título da coleção")
 	local ok, code = ProfileOps.claimCollection(p, ctx(), "urban")
 	eq(code, "already_claimed")
 	ok, code = ProfileOps.claimCollection(p, ctx(), "tactical")
@@ -589,22 +622,23 @@ test("[13d] coleção e conquistas com resgate único", function()
 	truthy(ProfileOps.claimAchievement(p, ctx(), "a_col1"))
 	ok, code = ProfileOps.claimAchievement(p, ctx(), "a_col1")
 	eq(code, "already_claimed")
-	ok, code = ProfileOps.claimAchievement(p, ctx(), "a_col6")
+	ok, code = ProfileOps.claimAchievement(p, ctx(), "a_col12")
 	eq(code, "achievement_locked")
 end)
 
 test("[14] rankings consistentes com o perfil", function()
 	local p = fresh()
 	p.credits = 500
-	local uid = giveItem(p, "shadow_10")
+	local uid = giveItem(p, "phantom_05")
 	ProfileOps.deposit(p, ctx(NOW), uid)
 	BankMath.settle(p, NOW + 3600)
 	local s = LeaderboardStats.compute(p)
-	eq(s.netWorth, 500 + SkinDefinitions.ById.shadow_10.value)
+	eq(s.netWorth, 500 + SkinDefinitions.ById.phantom_05.value + math.floor(p.bank.pending))
 	local before = s.netWorth
 	local ok, res = ProfileOps.claimBank(p, ctx(NOW + 3600))
 	truthy(ok)
-	eq(LeaderboardStats.compute(p).netWorth, before + res.credits, "renda contada uma única vez")
+	eq(LeaderboardStats.compute(p).netWorth, before, "renda contada uma única vez")
+	truthy(s.bankIncome > 0, "ranking de renda")
 	eq(s.unique, 1)
 end)
 
@@ -727,6 +761,131 @@ end)
 test("preço da oficina é determinístico", function()
 	local r = UpgradeRecipes.ById.finish
 	eq(UpgradeRecipes.creditCost(r, 100), 55)
+end)
+
+print("== Novidades V4 ==")
+
+local AttributeConfig = shared_module("Config/AttributeConfig")
+
+test("×25 exige o atributo Limite de abertura múltipla", function()
+	local p = fresh()
+	p.credits = 100000
+	local ok, code = ProfileOps.openCases(p, ctx(), "starter", 25, {})
+	eq(code, "quantity_locked")
+	eq(p.credits, 100000)
+	p.level = 15
+	truthy(ProfileOps.buyAttribute(p, ctx(), "multiOpen"))
+	local ok2, res = ProfileOps.openCases(p, ctx(), "starter", 25, {})
+	truthy(ok2, tostring(res))
+	eq(#res.results, 25)
+end)
+
+test("atributos: limite máximo, requisito e custo progressivo", function()
+	local p = fresh()
+	p.credits = 1e9
+	local ok, code = ProfileOps.buyAttribute(p, ctx(), "luck")
+	eq(code, "level_locked")
+	p.level = 100
+	local last = 0
+	for _ = 1, AttributeConfig.Attributes.luck.maxLevel do
+		local okB, res = ProfileOps.buyAttribute(p, ctx(), "luck")
+		truthy(okB)
+		truthy(res.cost > last)
+		last = res.cost
+	end
+	ok, code = ProfileOps.buyAttribute(p, ctx(), "luck")
+	eq(code, "max_level")
+	local total = ProfileOps.activeLuck(p, NOW)
+	truthy(total >= 0.10 - 1e-9, "sorte do atributo aplicada")
+	local info = ProfileOps.attributeInfo(p, "luck")
+	eq(info.level, info.maxLevel)
+	eq(info.nextBenefit, nil)
+end)
+
+test("atributos vinculados alteram a mesma melhoria do banco", function()
+	local p = fresh()
+	p.credits = 1e9
+	p.level = 100
+	truthy(ProfileOps.buyAttribute(p, ctx(), "bankCapacity"))
+	eq(p.bank.upgrades.slots, 1)
+	eq(ProfileOps.attributeLevel(p, "bankCapacity"), 1)
+	truthy(ProfileOps.buyBankUpgrade(p, ctx(), "efficiency"))
+	eq(ProfileOps.attributeLevel(p, "bankEfficiency"), 1)
+end)
+
+test("bônus de XP e títulos por nível", function()
+	local p = fresh()
+	p.attributes.xpBonus = 10
+	local Progression = shared_module("Logic/Progression")
+	local got = Progression.addXp(p, 100, nil, NOW)
+	eq(got, 150)
+	local p2 = fresh()
+	ProfileOps._giveXp(p2, 60000, nil, NOW)
+	truthy(p2.level >= 15)
+	truthy(p2.titles.colecionador and p2.titles.especialista, "títulos de nível")
+end)
+
+test("conquistas concedem XP", function()
+	local p = fresh()
+	p.stats.casesOpened = 1
+	ProfileOps.checkAchievements(p, NOW)
+	truthy(p.achievements.a_open1)
+	truthy(p.xp > 0 or p.level > 1)
+end)
+
+test("limite offline aumenta com a melhoria", function()
+	local p = fresh()
+	p.bank.upgrades.storage = 8
+	ProfileOps.deposit(p, ctx(NOW), giveItem(p, "elite_04"))
+	local base = BankMath.offlineCap(p)
+	p.bank.upgrades.offline = 2
+	eq(BankMath.offlineCap(p), base + 4 * 3600)
+	local rate = BankMath.totalRate(p)
+	BankMath.settle(p, NOW + 100 * 3600)
+	near(p.bank.pending, math.min(rate * (base + 4 * 3600), BankMath.storageCap(p)), 1e-6)
+end)
+
+test("showroom: limite de vagas e depósito remove a exposição", function()
+	local p = fresh()
+	local uids = {}
+	for i = 1, EconomyConfig.ShowcaseSlots do
+		uids[i] = giveItem(p, "urban_01")
+		truthy(ProfileOps.setShowcase(p, ctx(), uids[i], true))
+	end
+	local ok, code = ProfileOps.setShowcase(p, ctx(), giveItem(p, "urban_02"), true)
+	eq(code, "showcase_full")
+	truthy(ProfileOps.deposit(p, ctx(), uids[1]))
+	eq(p.inventory[uids[1]].showcase, nil)
+	eq(ProfileOps.showcaseCount(p), EconomyConfig.ShowcaseSlots - 1)
+end)
+
+test("variante exclusiva da coleção exige coleção resgatada", function()
+	local p = fresh()
+	local uid = giveItem(p, "starter_01")
+	local ok, code = ProfileOps.applyCollectionVariant(p, ctx(), uid)
+	eq(code, "cosmetic_locked")
+	for _, s in ipairs(SkinDefinitions.ByCase.starter) do
+		p.discovered[s.id] = NOW
+	end
+	truthy(ProfileOps.claimCollection(p, ctx(), "starter"))
+	truthy(ProfileOps.applyCollectionVariant(p, ctx(), uid))
+	truthy(p.inventory[uid].upgrades.colVariant)
+end)
+
+test("caixas de níveis altos bloqueadas e liberadas pelo nível", function()
+	local p = fresh()
+	p.credits = 1e7
+	local ok, code = ProfileOps.openCases(p, ctx(), "royal", 1, {})
+	eq(code, "level_locked")
+	p.level = 40
+	truthy(ProfileOps.openCases(p, ctx(), "royal", 1, {}))
+end)
+
+test("evolução não trava sem créditos: caixa Starter acessível e presente diário", function()
+	local p = fresh()
+	p.credits = 0
+	truthy(ProfileOps.claimDaily(p, ctx()))
+	truthy(p.credits >= CaseDefinitions.ById.starter.price)
 end)
 
 print(string.format("\n%d passaram, %d falharam", passed, failed))

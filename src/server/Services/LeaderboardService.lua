@@ -8,6 +8,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage.Shared
 local LeaderboardStats = require(Shared.Logic.LeaderboardStats)
+local Format = require(Shared.Util.Format)
 
 local Remotes = require(script.Parent.Parent.Core.Remotes)
 local PlayerDataService = require(script.Parent.PlayerDataService)
@@ -98,6 +99,38 @@ local function serverBoard()
 	return rows
 end
 
+-- painel físico do lobby: top 10 de patrimônio (global em cache; sem DataStore, o do servidor)
+local function updateBoard()
+	local lobby = workspace:FindFirstChild("Lobby")
+	local board = lobby and lobby:FindFirstChild("RankingBoard")
+	local label = board and board:FindFirstChild("RankingGui") and board.RankingGui:FindFirstChild("Rows")
+	if not label then
+		return
+	end
+	local rows = {}
+	local global = cache.boards.netWorth
+	if enabled and global and #global > 0 then
+		for _, r in ipairs(global) do
+			table.insert(rows, { name = r.name, value = r.value })
+		end
+	else
+		for _, s in ipairs(serverBoard()) do
+			table.insert(rows, { name = s.name, value = s.netWorth })
+		end
+		table.sort(rows, function(a, b)
+			return a.value > b.value
+		end)
+	end
+	local lines = { enabled and "🏆 PATRIMÔNIO — GLOBAL" or "🏆 PATRIMÔNIO — SERVIDOR" }
+	for i = 1, math.min(10, #rows) do
+		table.insert(lines, "#" .. i .. "  " .. tostring(rows[i].name) .. "  —  ₵ " .. Format.short(rows[i].value))
+	end
+	if #rows == 0 then
+		table.insert(lines, "Ainda sem dados")
+	end
+	label.Text = table.concat(lines, "\n")
+end
+
 function LeaderboardService.init()
 	if PlayerDataService.isMemoryMode() then
 		enabled = false
@@ -132,6 +165,13 @@ function LeaderboardService.start()
 				server = serverBoard(),
 			},
 		}
+	end)
+
+	task.spawn(function()
+		while true do
+			task.wait(15)
+			updateBoard()
+		end
 	end)
 
 	if not enabled then
