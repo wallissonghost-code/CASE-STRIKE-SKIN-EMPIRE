@@ -1,47 +1,54 @@
-# Registro de testes — V4.0
+# Registro de testes — MUTANT FACTORY
 
-Executados com `python3 tests/harness.py` em 28/10/2026: **56 testes de lógica e 39 de servidor+cliente, todos passando** (inclui zonas, poções, eventos 2X, loja em seções e estoque limitado), mais `tests/check_requires.py` sem erros.
+Executados com `python3 tests/harness.py` em 28/10/2026:
+- **30 testes de lógica** e **32 de servidor + cliente**, todos passando.
+- `tests/check_requires.py`: 106 requires verificados, sem erros.
 
-"Simulado" = servidor (`Main.server.lua`) e cliente (`Main.client.lua`) reais rodando em `tests/roblox_mock.lua`, com DataStore em memória (inclusive falhas), relógio virtual e cliques reais nos botões da interface. Não substitui o Roblox Studio: itens marcados ⚠️ precisam do roteiro manual abaixo.
+"Simulado" = `Main.server.lua` e `Main.client.lua` reais rodando em `tests/roblox_mock.lua`, com:
+- DataStore em memória, inclusive falhas;
+- relógio virtual;
+- personagens com posição;
+- botões de proximidade disparados;
+- cliques reais na interface.
 
-| # | Teste obrigatório | Evidência automática | Resultado |
-|---|---|---|---|
-| 1 | Entrada e carregamento de dados | "perfil carrega com trava de sessão e envia fotografia", "cliente inicia sem erros e recebe a fotografia" | ✅ simulado |
-| 2 | Saldo inicial | `preços e níveis das 12 caixas` (500 créditos); fotografia inicial com ₵ 500 | ✅ |
-| 3 | Compra de caixas | `[3] sem cobranças duplicadas`, "abrir caixa via remote desconta e entrega", níveis de bloqueio | ✅ |
-| 4 | Sorteio correto | `[2]` (cada abertura entrega o sorteado), simulação de 200 mil sorteios, validador de RNG, soma 100% com e sem sorte | ✅ |
-| 5 | Animação da roleta | fluxo de UI "loja → ABRIR → roleta → item no inventário" | ✅ simulado ⚠️ visual no Studio |
-| 6 | Abertura múltipla | `[4]` atômica, `[4b]` inventário cheio, ×10 pela UI, ×25 com atributo (lógica e UI, sem faixas animadas) | ✅ |
-| 7 | Abertura automática | `[5]` limites e parada; remotes start/stop; botão PARAR na UI | ✅ |
-| 8 | Venda de skins | `[6]`, `[6b]` favoritas, venda de Secreta exige confirmação (lógica e remote) | ✅ |
-| 9 | Depósito no banco | `[7]` sem duplicar; vagas; depósito pela UI | ✅ |
-| 10 | Resgate da renda | `[8]`, resgate pelo remote e pela UI | ✅ |
-| 11 | Produção offline | `[9]` limite e cofre; "limite offline aumenta com a melhoria"; relógio voltando não gera créditos | ✅ |
-| 12 | Cálculo de patrimônio | `[10]` sem dupla contagem, pendente incluído uma vez, resgate não altera | ✅ |
-| 13 | Inspeção 3D | fluxo de UI: inspecionar, aproximar, afastar, giro automático, fechar | ✅ simulado ⚠️ arrastar no Studio |
-| 14 | Melhorias | `[12]` não consome sem entregar; variante de coleção; oficina pela UI | ✅ |
-| 15 | Progressão de XP | curva gradual, limite diário, bônus de XP, títulos por nível, XP de conquistas | ✅ |
-| 16 | Renascimento | `[11]` preserva raras, favoritas, índice e conquistas; confirmação digitada | ✅ |
-| 17 | Missões | `[13]`, `[13b]`, missões de coleção e nível, sem resgate repetido | ✅ |
-| 18 | Presentes | `[13c]` diário e de nível sem duplicar; presente diário pela UI | ✅ |
-| 19 | Coleções | `[13d]` recompensa única, título e cosméticos; variante exclusiva | ✅ |
-| 20 | Rankings | `[14]` consistentes (incluindo renda do banco); ranking do servidor via remote | ✅ |
-| 21 | Reconexão após falha | falhas temporárias de DataStore repetidas; desconexão libera trava; reinício do servidor mantém inventário e saldo | ✅ simulado |
-| 22 | Proteção contra duplicação | `requestId` repetido não cobra duas vezes; venda repetida falha; perfil travado por outro servidor não é carregado; trava perdida impede sobrescrever | ✅ |
-| 23 | Interface mobile | ScreenGuis com UIScale (1280×720 base) criadas e todos os painéis abrem | ⚠️ conferir no emulador de dispositivos |
-| 24 | Uso de memória | sem medição automática | ⚠️ medir no Studio (Developer Console → Memory) |
-| 25 | Servidores com vários jogadores | "vários jogadores simultâneos não interferem" (3 jogadores) | ✅ simulado ⚠️ confirmar com Clients and Servers |
+Isso **não substitui o Roblox Studio**: física, câmera, renderização e rede real só aparecem lá (roteiro abaixo).
 
-PvP, monstros e combate: `[16]` confirma todos os bloqueios em `FeatureFlags` e nenhum serviço de combate é carregado.
+| Área | O que foi verificado | Resultado |
+|---|---|---|
+| Carga e salvamento | trava de sessão, saída libera a trava, reinício do servidor mantém moedas e criaturas, perfil travado por outro servidor não carrega, falhas temporárias repetidas | ✅ simulado |
+| Bases | 6 bases, jogador levado até a sua, 7º jogador recebe aviso de servidor cheio | ✅ simulado |
+| Esteira | criaturas aparecem e andam; compra só de perto, pelo preço do servidor; quem chega depois recebe "outra pessoa comprou" | ✅ simulado |
+| Ovos | cobrança única com `requestId` repetido, preço do cliente ignorado, limite de frequência, chances somam 100%, 100 mil sorteios seguem as chances, valor esperado ≈ preço | ✅ |
+| Renda | por horário, limite do cofre, offline, relógio voltando, poção e evento de renda só no período certo, cofre maior não perde nem duplica | ✅ |
+| Coleta | só dentro da própria base | ✅ simulado |
+| Roubo | proteção de novato, pegar (prompt), vítima avisada, venda travada durante o roubo, mais devagar carregando, entrega muda o dono e salva os dois perfis | ✅ simulado |
+| Roubo — devolução | dono encosta (defesa), tempo esgotado, escudo ligado com ladrão dentro, ladrão sai do servidor | ✅ simulado |
+| Roubo — bloqueios | escudo ativo, criatura protegida por 3 min, base do ladrão cheia | ✅ |
+| Escudo | só dentro da base, empurra visitantes, não liga duas vezes | ✅ simulado |
+| Melhorias, poções, venda | custos, níveis máximos, efeitos, confirmação para Lendária/Mítica | ✅ |
+| Missões, presentes, índice | progresso por evento, resgate único, recompensa proporcional à renda, sequência diária, marcos | ✅ |
+| Renascer | frase de confirmação, custo, mantém índice/melhorias, bloqueado com criatura sendo roubada | ✅ |
+| Eventos | agenda fixa, aviso a todos, chances mudam; evento de teste só no Studio | ✅ |
+| Integridade | perfil corrompido reparado (moedas, pedestais duplicados, criaturas inexistentes) | ✅ |
+| Interface | HUD, 9 painéis abrem, abrir ovo, melhorar, presente, aviso de roubo | ✅ simulado |
 
 ## Roteiro manual no Roblox Studio
 
-1. Gerar `CaseStrike.rbxlx` (`python3 tools/build_place.py`), abrir e dar Play. O Output deve mostrar `[CASE STRIKE] servidor pronto` sem avisos de validação.
-2. Publicar o place, ativar *Enable Studio Access to API Services*, sair e voltar: saldo e inventário devem persistir.
-3. Abrir cada botão dos menus; Batalha e portais mostram "EM BREVE".
-4. Abrir Starter ×1, ×5, ×10 e ×25 (após comprar o atributo); testar modo rápido, pular animação, reduzir efeitos e abertura automática com PARAR.
-5. Inspecionar uma skin: arrastar para girar, roda do mouse para aproximar.
-6. Depositar skins, sair por alguns minutos e voltar: o acumulado cresce até o cofre e o limite offline.
-7. Expor skins no showroom e visitar a vitrine com outro jogador (*Test → Clients and Servers*, 3 jogadores).
-8. Emulador de dispositivos (celular paisagem, tablet, 1920×1080): nada cortado, botões tocáveis.
-9. Developer Console → Memory: acompanhar memória após 10 minutos de abertura automática.
+1. Gere o place com `python3 tools/build_place.py`, abra `MutantFactory.rbxlx` e dê Play.
+   - O Output deve mostrar `[MUTANT FACTORY] servidor pronto`.
+   - Você deve aparecer na sua base.
+2. Teste a esteira: vá até a praça, aperte E numa criatura da esteira e confira que ela aparece num pedestal da sua base.
+3. Teste os ovos: abra o Ovo Básico no quiosque. A animação deve tocar e a criatura deve ir para a base.
+4. Espere 1 minuto e colete no terminal amarelo.
+5. Teste o roubo com *Test → Clients and Servers*, 2 jogadores:
+   - espere 2 min (proteção de novato);
+   - com o jogador 2, entre na base do 1, segure E numa criatura e corra até a própria base;
+   - repita e, com o jogador 1, encoste no ladrão;
+   - repita e trave a base com o ladrão dentro.
+6. Escudo: com ele ativo, o jogador 2 deve ser levado para fora ao tentar entrar.
+7. Persistência:
+   - publique, ative *Enable Studio Access to API Services*;
+   - saia e volte: moedas e criaturas devem continuar;
+   - volte depois de alguns minutos: as moedas guardadas devem ter crescido.
+8. Celular: use o emulador de dispositivos (celular paisagem e tablet). Nada deve ficar cortado e os botões devem ser tocáveis.
+9. Desempenho: com 6 jogadores e 20 criaturas cada, acompanhe *Developer Console → Memory* e o *MicroProfiler*.

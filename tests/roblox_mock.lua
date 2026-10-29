@@ -342,6 +342,10 @@ function methods:Destroy()
 end
 function methods:PivotTo(cf)
 	rawset(self, "__pivot", cf)
+	local pp = rawget(self, "__props").PrimaryPart
+	if pp then
+		pp.CFrame = cf
+	end
 end
 function methods:GetPivot()
 	return rawget(self, "__pivot") or CFrame.new(0, 0, 0)
@@ -408,6 +412,12 @@ Inst.__index = function(self, k)
 end
 Inst.__newindex = function(self, k, v)
 	local props = rawget(self, "__props")
+	-- CFrame e Position andam juntos (como numa Part de verdade)
+	if k == "CFrame" and type(v) == "table" and v.Position then
+		props.Position = v.Position
+	elseif k == "Position" and type(v) == "table" and getmetatable(v) == Vec then
+		props.CFrame = CFrame.new(v)
+	end
 	if k == "Parent" then
 		local old = props.Parent
 		if old then
@@ -433,6 +443,15 @@ function M.instance(class, name)
 	i.Name = name or class
 	if class == "NumberValue" or class == "IntValue" then
 		i.Value = 0
+	end
+	if BASE_PART[class] then
+		i.Transparency = 0
+		i.Reflectance = 0
+		i.Size = Vector3.new(4, 1, 2)
+	end
+	if class == "Humanoid" then
+		i.Health = 100
+		i.WalkSpeed = 16
 	end
 	return i
 end
@@ -575,7 +594,7 @@ function M.newGame(jobId)
 	services.StarterGui = { SetCoreGuiEnabled = function() end }
 	services.ProximityPromptService = { PromptTriggered = newSignal() }
 	services.RunService = { IsStudio = function()
-		return false
+		return M.isStudio == true
 	end, RenderStepped = newSignal(), Heartbeat = newSignal() }
 	local guid = 0
 	services.HttpService = { GenerateGUID = function()

@@ -1,318 +1,180 @@
--- ProfileSchema: perfil padrão, migração de versões e verificação de integridade.
--- Um único documento por jogador contém inventário, banco e progresso,
--- o que torna cada operação atômica (sem duplicação entre documentos).
+-- ProfileSchema: formato do perfil salvo, migração e validação de integridade.
+-- Um único documento por jogador => compra, venda, coleta e roubo são atômicos.
 
 local Shared = script.Parent.Parent
-local EconomyConfig = require(Shared.Config.EconomyConfig)
-local BankConfig = require(Shared.Config.BankConfig)
-local SkinDefinitions = require(Shared.Config.SkinDefinitions)
-local CaseDefinitions = require(Shared.Config.CaseDefinitions)
-local ProgressionConfig = require(Shared.Config.ProgressionConfig)
-local AttributeConfig = require(Shared.Config.AttributeConfig)
-local ZoneConfig = require(Shared.Config.ZoneConfig)
-local PotionConfig = require(Shared.Config.PotionConfig)
-local BankMath = require(Shared.Logic.BankMath)
+local GameConfig = require(Shared.Config.GameConfig)
 
 local ProfileSchema = {}
 
-ProfileSchema.Version = 3
+ProfileSchema.Version = 1
 
 function ProfileSchema.new(now)
 	return {
 		version = ProfileSchema.Version,
 		createdAt = now,
-		credits = EconomyConfig.StartingCredits,
-		level = 1,
-		xp = 0,
-		rebirths = 0,
+		coins = GameConfig.StartingCoins,
+		creatures = {}, -- [uid] = { uid, s (espécie), m (mutação), pad, since, at, origin, protectedUntil }
 		nextUid = 1,
-		inventory = {}, -- [uid] = item
-		materials = { scrap = 0, pigment = 0, core = 0 },
-		freeCases = {}, -- [caseId] = quantidade
-		bank = {
-			pending = 0,
-			lastTick = now,
-			upgrades = { slots = 0, efficiency = 0, storage = 0, offline = 0, display = 0 },
-		},
-		discovered = {}, -- [defId] = timestamp da primeira obtenção
-		collectionsClaimed = {}, -- [collectionId] = true
-		achievements = {}, -- [id] = timestamp de desbloqueio
-		achievementsClaimed = {}, -- [id] = true
-		titles = { novato = true },
-		cosmetics = {}, -- [id] = true (molduras, vitrines e variantes de coleção)
-		attributes = { luck = 0, xpBonus = 0, openSpeed = 0, multiOpen = 0 },
-		zones = { zone1 = true }, -- zonas desbloqueadas
-		potions = { luck = 0, xp = 0, income = 0 }, -- poções guardadas
-		activePotions = { luck = 0, xp = 0, income = 0 }, -- horário (servidor) em que cada efeito termina
-		stock = { day = -1, used = {} }, -- caixas de estoque limitado abertas no dia
-		equippedTitle = "novato",
-		missions = { day = -1, week = -1, daily = {}, weekly = {}, progress = {}, claimed = {} },
-		eventProgress = { eventId = "", progress = {}, claimed = {} },
-		rewards = { lastDailyDay = -1, dailyStreak = 0, levelClaimed = {} },
-		luck = { modifiers = {} }, -- lista de { id, expiresAt?, usesLeft? }
-		xpCaps = { day = -1, bySource = {} },
+		upgrades = { slots = 0, storage = 0, shield = 0, speed = 0 },
+		potions = { sorte = 0, renda = 0, velocidade = 0 },
+		activePotions = {}, -- [id] = horário em que termina
+		potionStarts = {}, -- [id] = início da ativação contínua atual (renda exata por período)
+		index = {}, -- ["especie:mutacao"] = horário da descoberta
+		missions = { day = -1, list = {}, progress = {}, claimed = {} },
+		gifts = { lastDay = -1, streak = 0 },
+		milestones = {},
+		rebirths = 0,
 		stats = {
-			casesOpened = 0,
-			skinsSold = 0,
-			creditsFromSales = 0,
-			creditsSpentOnCases = 0,
-			upgradesDone = 0,
-			bankClaimedTotal = 0,
-			bestDropValue = 0,
+			conveyorBought = 0,
+			hatched = 0,
+			stolen = 0,
+			defended = 0,
+			lostToThieves = 0,
+			coinsCollected = 0,
+			sold = 0,
 		},
-		settings = { fastOpen = false, reduceEffects = false },
-		txLog = {}, -- últimas transações (anel)
-		txSeq = 0,
+		settings = { reduceEffects = false },
 	}
 end
 
-local function isInteger(n)
-	return type(n) == "number" and n == math.floor(n)
+local function isNumber(v)
+	return type(v) == "number" and v == v and v ~= math.huge and v ~= -math.huge
 end
 
-local function fillDefaults(target, defaults)
-	for k, v in pairs(defaults) do
-		if target[k] == nil then
-			if type(v) == "table" then
-				local copy = {}
-				fillDefaults(copy, v)
-				target[k] = copy
-			else
-				target[k] = v
-			end
-		elseif type(v) == "table" and type(target[k]) == "table" and k ~= "inventory" then
-			fillDefaults(target[k], v)
+-- completa campos que faltam (perfis antigos ou corrompidos)
+function ProfileSchema.migrate(profile, now)
+	local fresh = ProfileSchema.new(now)
+	for k, v in pairs(fresh) do
+		if profile[k] == nil or type(profile[k]) ~= type(v) then
+			profile[k] = v
 		end
 	end
-end
-
--- Migra perfis antigos para a versão atual (estrutura preparada para expansão).
-function ProfileSchema.migrate(profile, now)
-	local defaults = ProfileSchema.new(now)
-	fillDefaults(profile, defaults)
+	for _, group in ipairs({ "upgrades", "potions", "stats", "settings" }) do
+		for k, v in pairs(fresh[group]) do
+			if type(profile[group][k]) ~= type(v) then
+				profile[group][k] = v
+			end
+		end
+	end
+	for _, k in ipairs({ "list", "progress", "claimed" }) do
+		if type(profile.missions[k]) ~= "table" then
+			profile.missions[k] = {}
+		end
+	end
 	profile.version = ProfileSchema.Version
 	return profile
 end
 
--- Verifica e corrige inconsistências. Retorna lista de problemas encontrados (strings).
+function ProfileSchema.slots(profile)
+	return GameConfig.Base.StartSlots + (profile.upgrades.slots or 0) * GameConfig.Upgrades.slots.perLevel
+end
+
+-- corrige valores impossíveis; retorna a lista de problemas encontrados
 function ProfileSchema.validate(profile, now)
 	local issues = {}
-	local function issue(msg)
-		table.insert(issues, msg)
+	if not isNumber(profile.coins) or profile.coins < 0 then
+		table.insert(issues, "moedas inválidas")
+		profile.coins = 0
 	end
-
-	if type(profile.credits) ~= "number" or profile.credits ~= profile.credits then
-		issue("saldo inválido; redefinido para 0")
-		profile.credits = 0
-	end
-	if profile.credits < 0 then
-		issue("saldo negativo corrigido")
-		profile.credits = 0
-	end
-	if profile.credits > EconomyConfig.MaxCredits then
-		issue("saldo acima do teto de segurança")
-		profile.credits = EconomyConfig.MaxCredits
-	end
-	profile.credits = math.floor(profile.credits)
-
-	if not isInteger(profile.level) or profile.level < 1 then
-		issue("nível inválido")
-		profile.level = 1
-	end
-	if profile.level > ProgressionConfig.MaxLevel then
-		profile.level = ProgressionConfig.MaxLevel
-	end
-	if type(profile.xp) ~= "number" or profile.xp < 0 then
-		profile.xp = 0
-	end
-
-	for k, v in pairs(profile.materials) do
-		if type(v) ~= "number" or v < 0 then
-			issue("material inválido: " .. tostring(k))
-			profile.materials[k] = 0
+	profile.coins = math.min(math.floor(profile.coins), GameConfig.MaxCoins)
+	for id, u in pairs(GameConfig.Upgrades) do
+		local l = profile.upgrades[id]
+		if not isNumber(l) or l < 0 or l > u.maxLevel then
+			table.insert(issues, "melhoria " .. id)
+			profile.upgrades[id] = math.max(0, math.min(u.maxLevel, math.floor(isNumber(l) and l or 0)))
 		end
 	end
-	for caseId, n in pairs(profile.freeCases) do
-		if not CaseDefinitions.ById[caseId] or type(n) ~= "number" or n <= 0 then
-			profile.freeCases[caseId] = nil
+	for id in pairs(GameConfig.Potions) do
+		local n = profile.potions[id]
+		if not isNumber(n) or n < 0 then
+			profile.potions[id] = 0
+			table.insert(issues, "poção " .. id)
 		end
 	end
-
-	-- inventário: definições válidas, uids únicos, contador consistente
-	local maxUidNum = 0
-	local equippedCount = 0
-	local bankCount = 0
-	local removed = 0
-	local toRemove = {}
-	for uid, item in pairs(profile.inventory) do
-		if type(item) ~= "table" or not SkinDefinitions.ById[item.defId] then
-			table.insert(toRemove, uid)
+	if not isNumber(profile.rebirths) or profile.rebirths < 0 then
+		profile.rebirths = 0
+		table.insert(issues, "renascimentos")
+	end
+	-- criaturas: espécie/mutação existentes, pedestal único dentro das vagas, horários válidos
+	local slots = ProfileSchema.slots(profile)
+	local usedPads = {}
+	local list = {}
+	for uid, c in pairs(profile.creatures) do
+		if type(c) ~= "table" or not GameConfig.SpeciesById[c.s] or not GameConfig.Mutations[c.m] then
+			table.insert(issues, "criatura inválida " .. tostring(uid))
+			profile.creatures[uid] = nil
 		else
-			if item.uid ~= uid then
-				issue("uid divergente corrigido: " .. tostring(uid))
-				item.uid = uid
+			c.uid = uid
+			if not isNumber(c.since) or c.since > now + 60 then
+				c.since = now
 			end
-			if item.location ~= "inventory" and item.location ~= "bank" then
-				item.location = "inventory"
+			if c.banked ~= nil and (not isNumber(c.banked) or c.banked < 0) then
+				c.banked = 0
 			end
-			if item.location == "bank" then
-				item.equipped = false
-				bankCount = bankCount + 1
-			end
-			if item.equipped then
-				equippedCount = equippedCount + 1
-			end
-			item.upgrades = item.upgrades or {}
-			local num = tonumber(string.match(uid, "^i(%d+)$") or "")
-			if num and num > maxUidNum then
-				maxUidNum = num
-			end
-			-- todas as skins possuídas contam como descobertas
-			if not profile.discovered[item.defId] then
-				profile.discovered[item.defId] = item.obtainedAt or now
-			end
+			table.insert(list, c)
 		end
 	end
-	for _, uid in ipairs(toRemove) do
-		profile.inventory[uid] = nil
-		removed = removed + 1
-	end
-	if removed > 0 then
-		issue("itens com definição inexistente removidos: " .. removed)
-	end
-	if profile.nextUid <= maxUidNum then
-		issue("contador de uid ajustado")
-		profile.nextUid = maxUidNum + 1
-	end
-
-	-- banco: não pode ter mais skins que vagas; excedentes voltam ao inventário
-	local slots = BankMath.slots(profile)
-	if bankCount > slots then
-		issue("skins além das vagas do banco devolvidas ao inventário")
-		local deposited = BankMath.depositedItems(profile)
-		for i = slots + 1, #deposited do
-			deposited[i].location = "inventory"
-			deposited[i].depositedAt = nil
+	table.sort(list, function(a, b)
+		return (a.at or 0) < (b.at or 0)
+	end)
+	local overflow = {}
+	for _, c in ipairs(list) do
+		if isNumber(c.pad) and c.pad >= 1 and c.pad <= slots and not usedPads[c.pad] then
+			usedPads[c.pad] = true
+		else
+			table.insert(overflow, c)
 		end
 	end
-	for id, u in pairs(BankConfig.Upgrades) do
-		local lvl = profile.bank.upgrades[id] or 0
-		if not isInteger(lvl) or lvl < 0 then
-			lvl = 0
-		end
-		if lvl > u.maxLevel then
-			lvl = u.maxLevel
-		end
-		profile.bank.upgrades[id] = lvl
-	end
-	if type(profile.bank.pending) ~= "number" or profile.bank.pending < 0 then
-		profile.bank.pending = 0
-	end
-	local cap = BankMath.storageCap(profile)
-	if profile.bank.pending > cap then
-		profile.bank.pending = cap
-	end
-	if type(profile.bank.lastTick) ~= "number" or profile.bank.lastTick > now + 60 then
-		issue("marcador de tempo do banco no futuro; reancorado")
-		profile.bank.lastTick = now
-	end
-
-	-- atributos dentro dos limites (os vinculados ao banco ficam em bank.upgrades)
-	for id, attr in pairs(AttributeConfig.Attributes) do
-		if not attr.linkedBankUpgrade then
-			local lvl = profile.attributes[id] or 0
-			if not isInteger(lvl) or lvl < 0 then
-				lvl = 0
-			end
-			if lvl > attr.maxLevel then
-				issue("atributo acima do limite: " .. id)
-				lvl = attr.maxLevel
-			end
-			profile.attributes[id] = lvl
-		end
-	end
-
-	-- zonas, poções e estoque
-	for id in pairs(profile.zones) do
-		if not ZoneConfig.ById[id] then
-			profile.zones[id] = nil
-		end
-	end
-	profile.zones.zone1 = true
-	for id in pairs(PotionConfig.Potions) do
-		local n = profile.potions[id] or 0
-		if not isInteger(n) or n < 0 then
-			issue("poções inválidas: " .. id)
-			n = 0
-		end
-		profile.potions[id] = n
-		local e = profile.activePotions[id] or 0
-		if type(e) ~= "number" or e < 0 then
-			e = 0
-		end
-		-- efeito não pode terminar além do limite máximo a partir de agora
-		if e > now + PotionConfig.Potions[id].maxStack then
-			issue("efeito de poção além do limite: " .. id)
-			e = now + PotionConfig.Potions[id].maxStack
-		end
-		profile.activePotions[id] = e
-	end
-	if type(profile.stock.used) ~= "table" then
-		profile.stock = { day = -1, used = {} }
-	end
-
-	-- showroom: só skins no inventário e dentro do limite de vagas
-	local shown = 0
-	for _, item in pairs(profile.inventory) do
-		if item.showcase then
-			if item.location ~= "inventory" or shown >= EconomyConfig.ShowcaseSlots then
-				item.showcase = nil
-			else
-				shown = shown + 1
+	for _, c in ipairs(overflow) do
+		local free = nil
+		for i = 1, slots do
+			if not usedPads[i] then
+				free = i
+				break
 			end
 		end
-	end
-
-	-- equipamentos dentro do limite
-	local maxEquip = ProfileSchema.equipSlots(profile)
-	if equippedCount > maxEquip then
-		issue("equipamentos acima do limite desmarcados")
-		local n = 0
-		for _, item in pairs(profile.inventory) do
-			if item.equipped then
-				n = n + 1
-				if n > maxEquip then
-					item.equipped = false
-				end
-			end
+		if free then
+			c.pad = free
+			usedPads[free] = true
+		else
+			-- mais criaturas que vagas (não deveria acontecer): vende pelo valor normal
+			profile.creatures[c.uid] = nil
+			local s = GameConfig.SpeciesById[c.s]
+			profile.coins = profile.coins + math.floor(s.price * GameConfig.Mutations[c.m].mult * GameConfig.SellRate)
+			table.insert(issues, "criatura sem vaga vendida " .. c.uid)
 		end
 	end
-
-	for id in pairs(profile.titles) do
-		if not ProgressionConfig.Titles[id] then
-			profile.titles[id] = nil -- título removido do jogo
+	if not isNumber(profile.nextUid) or profile.nextUid < 1 then
+		profile.nextUid = 1
+	end
+	for uid in pairs(profile.creatures) do
+		local n = tonumber(string.match(uid, "^c(%d+)$") or "")
+		if n and n >= profile.nextUid then
+			profile.nextUid = n + 1
 		end
 	end
-	if not profile.equippedTitle or not profile.titles[profile.equippedTitle] then
-		profile.equippedTitle = "novato"
-		profile.titles.novato = true
-	end
-
 	return issues
 end
 
-function ProfileSchema.equipSlots(profile)
-	local rebirthBonus = math.floor((profile.rebirths or 0) / ProgressionConfig.Rebirth.ExtraEquipSlotEvery)
-	local display = (profile.bank.upgrades and profile.bank.upgrades.display) or 0
-	return math.min(EconomyConfig.MaxEquipSlots, EconomyConfig.BaseEquipSlots + display + rebirthBonus)
-end
-
-function ProfileSchema.itemCount(profile)
+function ProfileSchema.creatureCount(profile)
 	local n = 0
-	for _ in pairs(profile.inventory) do
+	for _ in pairs(profile.creatures) do
 		n = n + 1
 	end
 	return n
+end
+
+function ProfileSchema.freePad(profile)
+	local used = {}
+	for _, c in pairs(profile.creatures) do
+		used[c.pad] = true
+	end
+	for i = 1, ProfileSchema.slots(profile) do
+		if not used[i] then
+			return i
+		end
+	end
+	return nil
 end
 
 return ProfileSchema

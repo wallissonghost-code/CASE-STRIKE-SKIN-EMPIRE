@@ -1,62 +1,61 @@
--- EventService: controla eventos temporários pelo relógio do servidor (EventDefinitions).
--- Detecta a virada de dia/semana e o início/fim de eventos, atualiza as missões de todos
--- os jogadores conectados e avisa o servidor quando um evento começa ou termina.
+-- EventService: anuncia os eventos de mutação (agenda fixa em EventConfig) e atualiza a placa da praça.
+-- O efeito dos eventos é aplicado pela lógica compartilhada (Odds/Income) usando o horário do servidor.
 
-local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage.Shared
-local ProfileOps = require(Shared.Logic.ProfileOps)
-local TimeUtil = require(Shared.Util.TimeUtil)
-local EventDefinitions = require(Shared.Config.EventDefinitions)
+local EventConfig = require(Shared.Config.EventConfig)
+local Format = require(Shared.Util.Format)
 
-local Remotes = require(script.Parent.Parent.Core.Remotes)
 local PlayerDataService = require(script.Parent.PlayerDataService)
+local MapService = require(script.Parent.MapService)
+local BaseService = require(script.Parent.BaseService)
 
 local EventService = {}
 
-local CHECK_INTERVAL = 30
+local lastEventKey = nil
 
-local function now()
-	return DateTime.now().UnixTimestamp
+function EventService.update(now)
+	local ev = EventConfig.at(now)
+	local key = ev and (ev.id .. ":" .. ev.startsAt) or nil
+	if key ~= lastEventKey then
+		lastEventKey = key
+		if ev then
+			BaseService.notifyAll("event", ev.icon .. " EVENTO: " .. ev.name .. "! " .. ev.description)
+			workspace:SetAttribute("EventId", ev.id)
+		else
+			workspace:SetAttribute("EventId", nil)
+		end
+		-- todos recebem a fotografia nova (chances e bônus mudam com o evento)
+		for _, p in ipairs(game:GetService("Players"):GetPlayers()) do
+			PlayerDataService.push(p)
+		end
+	end
+	if MapService.eventLabel then
+		if ev then
+			MapService.eventLabel.Text = ev.icon .. " " .. ev.name .. "\n<font color='#FFD84A'>termina em " .. Format.duration(ev.endsAt - now) .. "</font>"
+		else
+			local n = EventConfig.nextEvent(now)
+			MapService.eventLabel.Text = "Próximo evento\n" .. n.icon .. " " .. n.name .. "\n<font color='#9FD8FF'>em " .. Format.duration(n.startsAt - now) .. "</font>"
+		end
+	end
 end
 
-function EventService.current()
-	return EventDefinitions.activeEvent(now())
+-- usado em testes/Studio: força um evento agora
+function EventService.force(id, seconds)
+	local now = PlayerDataService.now()
+	local ev = EventConfig.force(id, now, seconds)
+	EventService.update(now)
+	return ev
 end
 
 function EventService.init() end
 
 function EventService.start()
 	task.spawn(function()
-		local lastDay = TimeUtil.dayIndex(now())
-		local lastWeek = TimeUtil.weekIndex(now())
-		local ev = EventDefinitions.activeEvent(now())
-		local lastEvent = ev and ev.id or ""
 		while true do
-			task.wait(CHECK_INTERVAL)
-			local t = now()
-			local day, week = TimeUtil.dayIndex(t), TimeUtil.weekIndex(t)
-			local cur = EventDefinitions.activeEvent(t)
-			local curId = cur and cur.id or ""
-			if day ~= lastDay or week ~= lastWeek or curId ~= lastEvent then
-				if curId ~= lastEvent then
-					Remotes.event("CaseOpenResult"):FireAllClients({
-						kind = "event",
-						started = cur ~= nil,
-						name = cur and cur.name or nil,
-					})
-				end
-				lastDay, lastWeek, lastEvent = day, week, curId
-				for _, player in ipairs(Players:GetPlayers()) do
-					if PlayerDataService.isLoaded(player) then
-						PlayerDataService.run(player, function(profile, ctx)
-							ProfileOps.refreshPeriods(profile, ctx.now)
-							return true, {}
-						end)
-					end
-				end
-			end
+			EventService.update(PlayerDataService.now())
+			task.wait(1)
 		end
 	end)
 end

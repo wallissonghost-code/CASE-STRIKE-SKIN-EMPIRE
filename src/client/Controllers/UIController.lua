@@ -7,22 +7,23 @@ local TweenService = game:GetService("TweenService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage.Shared
-local RarityConfig = require(Shared.Config.RarityConfig)
-local SkinModelFactory = require(Shared.Visual.SkinModelFactory)
-local CaseModelFactory = require(Shared.Visual.CaseModelFactory)
+local GameConfig = require(Shared.Config.GameConfig)
+local CreatureModel = require(Shared.Visual.CreatureModel)
+local Format = require(Shared.Util.Format)
 
 local UI = {}
 
 local player = Players.LocalPlayer
 
 UI.Theme = {
-	bg = Color3.fromRGB(16, 18, 28),
-	panel = Color3.fromRGB(24, 27, 42),
-	panel2 = Color3.fromRGB(34, 38, 58),
+	bg = Color3.fromRGB(14, 18, 24),
+	panel = Color3.fromRGB(22, 28, 38),
+	panel2 = Color3.fromRGB(33, 42, 56),
 	stroke = Color3.fromRGB(255, 255, 255),
-	text = Color3.fromRGB(245, 246, 250),
-	muted = Color3.fromRGB(165, 170, 190),
-	accent = Color3.fromRGB(255, 176, 46),
+	text = Color3.fromRGB(240, 248, 240),
+	muted = Color3.fromRGB(160, 178, 170),
+	accent = Color3.fromRGB(255, 190, 50),
+	toxic = Color3.fromRGB(120, 240, 80),
 	good = Color3.fromRGB(70, 205, 110),
 	bad = Color3.fromRGB(235, 70, 80),
 	blue = Color3.fromRGB(70, 140, 255),
@@ -199,7 +200,7 @@ function UI.clear(container)
 end
 
 function UI.rarityColor(rarityId)
-	local r = RarityConfig.Rarities[rarityId]
+	local r = GameConfig.Rarities[rarityId]
 	if not r then
 		return UI.Theme.muted
 	end
@@ -300,7 +301,7 @@ function UI.viewport(model, size, opts)
 				apply()
 			end,
 		}
-		-- giro automático (com balanço extra se a skin tiver a "Animação de inspeção") até o jogador tocar
+		-- giro automático até o jogador tocar
 		spinning[vp] = { model = model, speed = opts.inspect and 1.4 or 0.6, wobble = opts.inspect, t = 0, base = base, until_ = function()
 			return state.auto
 		end }
@@ -318,16 +319,31 @@ function UI.viewport(model, size, opts)
 	return vp
 end
 
-function UI.skinViewport(def, upgrades, size, opts)
-	local model = SkinModelFactory.build(def, upgrades)
+function UI.creatureViewport(speciesId, mutationId, size, opts)
+	opts = opts or {}
+	opts.baseRotation = opts.baseRotation or CFrame.Angles(0, math.rad(180), 0)
+	local model = CreatureModel.build(speciesId, mutationId, { anchored = true })
 	return UI.viewport(model, size, opts)
 end
 
-function UI.caseViewport(caseDef, size, opts)
-	opts = opts or {}
-	opts.baseRotation = CFrame.Angles(math.rad(-12), math.rad(25), 0)
-	local model = CaseModelFactory.build(caseDef)
-	return UI.viewport(model, size, opts)
+-- nome completo: "Dourada Gosminha" (mutação + espécie), com cores
+function UI.creatureName(speciesId, mutationId, rich)
+	local s = GameConfig.SpeciesById[speciesId]
+	local m = GameConfig.Mutations[mutationId]
+	if not s then
+		return "?"
+	end
+	if not rich then
+		return (mutationId ~= "normal" and (m.name .. " ") or "") .. s.name
+	end
+	local function hex(t)
+		return string.format("#%02X%02X%02X", t[1], t[2], t[3])
+	end
+	local out = ""
+	if mutationId ~= "normal" then
+		out = "<font color='" .. hex(m.color) .. "'>" .. m.name .. "</font> "
+	end
+	return out .. "<font color='" .. hex(GameConfig.Rarities[s.rarity].color) .. "'>" .. s.name .. "</font>"
 end
 
 RunService.RenderStepped:Connect(function(dt)
@@ -351,8 +367,8 @@ end)
 -- raiz, escala e camadas
 ---------------------------------------------------------------------------
 
--- Cada interface principal é uma ScreenGui própria (MainHUD, CaseShop, CaseOpening, Inventory,
--- Bank, UpgradeWorkshop, Collections, Missions, Rewards, Rankings...), todas com a mesma escala
+-- Cada interface principal é uma ScreenGui própria (MainHUD, EggShop, Hatch, BaseManager,
+-- IndexBook, Missions, Gifts, Ranking...), todas com a mesma escala
 -- responsiva: o layout é feito em 1280×720 e uma UIScale ajusta para PC, tablet e celular.
 local screens = {} -- [nome] = { gui, root, scale }
 UI.layers = {}
@@ -405,7 +421,7 @@ function UI.init()
 	UI.scale = scaleValue()
 	UI.layers.HUD = UI.screen("MainHUD", 1)
 	UI.layers.Panels = UI.screen("Panels", 10)
-	UI.layers.Overlay = UI.screen("CaseOpening", 20)
+	UI.layers.Overlay = UI.screen("Hatch", 20)
 	UI.layers.Modal = UI.screen("Dialogs", 30)
 	UI.layers.Toast = UI.screen("Toasts", 40)
 	workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale)
@@ -727,32 +743,17 @@ function UI.confirm(opts)
 	return shade
 end
 
--- resumo de recompensa em texto
-function UI.rewardText(reward, Format, CaseDefinitions, EconomyConfig)
+-- resumo de recompensa em texto: { coins, potions = { id = n } }
+function UI.rewardText(coins, potions)
 	local parts = {}
-	if reward.credits and reward.credits > 0 then
-		table.insert(parts, "₵ " .. Format.short(reward.credits))
+	if coins and coins > 0 then
+		table.insert(parts, "$" .. Format.short(coins))
 	end
-	if reward.xp and reward.xp > 0 then
-		table.insert(parts, reward.xp .. " XP")
-	end
-	for k, v in pairs(reward.materials or {}) do
-		local m = EconomyConfig.Materials[k]
-		table.insert(parts, v .. " " .. (m and m.displayName or k))
-	end
-	for caseId, n in pairs(reward.freeCases or {}) do
-		local c = CaseDefinitions.ById[caseId]
-		table.insert(parts, n .. "× " .. (c and c.name or caseId) .. " grátis")
-	end
-	if reward.luck then
-		table.insert(parts, "bônus de sorte")
-	end
-	local potionNames = { luck = "Poção da Sorte", xp = "Poção de XP", income = "Poção de Renda" }
-	for id, n in pairs(reward.potions or {}) do
-		table.insert(parts, n .. "× " .. (potionNames[id] or id))
-	end
-	if reward.title then
-		table.insert(parts, "título")
+	for _, id in ipairs(GameConfig.PotionOrder) do
+		local n = potions and potions[id]
+		if n and n > 0 then
+			table.insert(parts, n .. "× " .. GameConfig.Potions[id].icon)
+		end
 	end
 	return table.concat(parts, " · ")
 end

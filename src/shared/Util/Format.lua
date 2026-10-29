@@ -40,7 +40,7 @@ function Format.short(n)
 end
 
 function Format.credits(n)
-	return "₵ " .. Format.short(n)
+	return "$ " .. Format.short(n)
 end
 
 -- 0.0123 -> "1,230%" (3 casas)

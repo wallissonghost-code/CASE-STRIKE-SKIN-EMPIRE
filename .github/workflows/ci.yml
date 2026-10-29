@@ -1,6 +1,6 @@
 name: CI
 
-# Testes automáticos do CASE STRIKE RNG a cada push e pull request.
+# Testes automáticos do MUTANT FACTORY a cada push e pull request.
 # Executa: verificação de sintaxe, testes de lógica, servidor + cliente em Roblox simulado,
 # verificação de requires e gera o place .rbxlx como artefato para baixar e abrir no Studio.
 
@@ -23,8 +23,8 @@ jobs:
       - name: Verificar requires
         run: python3 tests/check_requires.py
       - name: Gerar place .rbxlx
-        run: python3 tools/build_place.py CaseStrikeRNG.rbxlx
+        run: python3 tools/build_place.py MutantFactory.rbxlx
       - uses: actions/upload-artifact@v4
         with:
-          name: CaseStrikeRNG-place
-          path: CaseStrikeRNG.rbxlx
+          name: MutantFactory-place
+          path: MutantFactory.rbxlx

@@ -1,8 +1,5 @@
-*.rbxl
-*.rbxlx
-*.rbxm
-*.rbxmx
-*.lock
 __pycache__/
-.DS_Store
+*.pyc
+*.rbxl.lock
+*.rbxlx.lock
 sourcemap.json

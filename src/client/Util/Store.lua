@@ -9,23 +9,22 @@ Store.view = nil
 Store.receivedAt = 0 -- os.clock() quando a fotografia chegou
 Store.changed = Signal.new()
 
-local itemsByUid = {}
-
 local function set(view)
 	if type(view) ~= "table" then
 		return
 	end
 	Store.view = view
 	Store.receivedAt = os.clock()
-	itemsByUid = {}
-	for _, item in ipairs(view.items or {}) do
-		itemsByUid[item.uid] = item
-	end
 	Store.changed:Fire(view)
 end
 
-function Store.item(uid)
-	return itemsByUid[uid]
+function Store.creature(uid)
+	for _, c in ipairs(Store.view and Store.view.creatures or {}) do
+		if c.uid == uid then
+			return c
+		end
+	end
+	return nil
 end
 
 -- horário do servidor estimado (para contagens de tempo reais)
@@ -36,15 +35,18 @@ function Store.serverNow()
 	return Store.view.serverTime + (os.clock() - Store.receivedAt)
 end
 
--- créditos pendentes do banco extrapolados para exibição (o valor real é do servidor)
-function Store.bankPendingLive()
+-- moedas guardadas na base, estimadas para exibição (o valor real é sempre do servidor)
+function Store.pendingLive()
 	local v = Store.view
 	if not v then
 		return 0
 	end
-	local b = v.bank
-	local elapsed = math.min(os.clock() - Store.receivedAt, b.maxOfflineSeconds)
-	return math.min(b.storageCap, b.pending + b.rate * elapsed)
+	local elapsed = os.clock() - Store.receivedAt
+	local total = 0
+	for _, c in ipairs(v.creatures) do
+		total = total + math.min(c.cap, c.pending + c.rate * (v.boost or 1) * elapsed)
+	end
+	return total
 end
 
 function Store.init()

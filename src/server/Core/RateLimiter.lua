@@ -1,14 +1,14 @@
 -- RateLimiter: balde de fichas por jogador e por categoria de ação.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local EconomyConfig = require(ReplicatedStorage.Shared.Config.EconomyConfig)
+local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
 
 local RateLimiter = {}
 
 local buckets = {} -- [player] = { [category] = { tokens, last } }
 
 function RateLimiter.allow(player, category)
-	local cfg = EconomyConfig.RateLimits[category]
+	local cfg = GameConfig.RateLimits[category]
 	if not cfg then
 		return true
 	end

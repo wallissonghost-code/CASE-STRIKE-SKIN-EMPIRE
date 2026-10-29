@@ -1,6 +1,6 @@
 -- PlayerDataService: perfil persistente por jogador com trava de sessão.
 --
--- * Um único documento por jogador (inventário, banco e progresso juntos) => operações atômicas.
+-- * Um único documento por jogador (moedas, criaturas e progresso juntos) => operações atômicas.
 -- * Trava de sessão via UpdateAsync: um servidor só grava se for o dono da trava,
 --   evitando gravações conflitantes e duplicação de itens entre servidores.
 -- * Salvamento automático periódico + salvamento rápido após operações importantes,
@@ -18,17 +18,16 @@ local Shared = ReplicatedStorage.Shared
 local ProfileSchema = require(Shared.Logic.ProfileSchema)
 local ProfileOps = require(Shared.Logic.ProfileOps)
 local ClientView = require(Shared.Logic.ClientView)
-local BankMath = require(Shared.Logic.BankMath)
-local Wealth = require(Shared.Logic.Wealth)
+local Income = require(Shared.Logic.Income)
 
 local Remotes = require(script.Parent.Parent.Core.Remotes)
 
 local PlayerDataService = {}
 
-local STORE_NAME = "CaseStrike_Profiles_v1"
+local STORE_NAME = "MutantFactory_Profiles_v1"
 local LOCK_STALE_SECONDS = 15 * 60 -- trava considerada abandonada após 15 min sem renovação
 local AUTOSAVE_INTERVAL = 60
-local SOON_SAVE_DELAY = 8
+local SOON_SAVE_DELAY = 3
 local LOAD_ATTEMPTS = 6
 
 local store = nil
@@ -38,21 +37,34 @@ local sessions = {} -- [player] = { profile, dirty, saving, soonScheduled, valid
 local releasing = {} -- [userId] = true enquanto a gravação final de saída está em andamento
 local rng = Random.new()
 local listeners = { loaded = {}, changed = {} }
+local lockProvider = nil -- function(player) -> { [uid] = true } (criaturas sendo carregadas)
+local viewExtraProvider = nil -- function(player) -> dados do mundo para a fotografia
 
 local function now()
 	return DateTime.now().UnixTimestamp
 end
 
--- ctx de uma operação: horário do servidor, RNG do servidor e a zona em que o SERVIDOR
--- detectou o personagem (ZoneService) — nunca informada pelo cliente.
+-- ctx de uma operação: horário e RNG do SERVIDOR e as criaturas travadas (sendo roubadas).
 function PlayerDataService.newContext(player)
 	return {
 		now = now(),
-		zoneId = player and player:GetAttribute("ZoneId") or nil,
+		locked = (lockProvider and player) and lockProvider(player) or {},
 		rng = function()
 			return rng:NextNumber()
 		end,
 	}
+end
+
+function PlayerDataService.setLockProvider(fn)
+	lockProvider = fn
+end
+
+function PlayerDataService.setViewExtraProvider(fn)
+	viewExtraProvider = fn
+end
+
+function PlayerDataService.now()
+	return now()
 end
 
 local function deepCopy(t)
@@ -150,7 +162,6 @@ local function saveSession(player, session, release)
 	end
 	session.saving = true
 	local t = now()
-	BankMath.settle(session.profile, t)
 	local snapshot = deepCopy(session.profile)
 	session.dirty = false
 	local lostLock = false
@@ -255,6 +266,36 @@ function PlayerDataService.run(player, fn, opts)
 	return { ok = true, data = data }
 end
 
+-- Operação atômica sobre DOIS perfis do mesmo servidor (roubo).
+-- fn(perfilA, perfilB, ctx) -> ok, dados. Se falhar, os dois perfis voltam como estavam.
+-- Os dois são salvos logo em seguida (salvamento rápido).
+function PlayerDataService.runPair(playerA, playerB, fn)
+	local sa, sb = sessions[playerA], sessions[playerB]
+	if not sa or not sa.valid or not sb or not sb.valid or sa == sb then
+		return Remotes.fail("not_loaded", "Dados indisponíveis.")
+	end
+	local backupA, backupB = deepCopy(sa.profile), deepCopy(sb.profile)
+	local ctx = PlayerDataService.newContext(nil)
+	local success, ok, data = pcall(fn, sa.profile, sb.profile, ctx)
+	if not success or not ok then
+		sa.profile, sb.profile = backupA, backupB
+		if not success then
+			warn("[PlayerData] operação dupla revertida: " .. tostring(ok))
+			return Remotes.fail("server_error", "Erro no servidor. Nada foi alterado.")
+		end
+		return Remotes.fail(data, ProfileOps.Messages[data] or "Operação recusada.")
+	end
+	for _, pair in ipairs({ { playerA, sa }, { playerB, sb } }) do
+		pair[2].dirty = true
+		PlayerDataService.saveSoon(pair[1])
+		for _, l in ipairs(listeners.changed) do
+			task.spawn(l, pair[1], pair[2].profile)
+		end
+		PlayerDataService.push(pair[1])
+	end
+	return { ok = true, data = data }
+end
+
 -- Envia a fotografia atualizada (agrupando várias alterações no mesmo quadro).
 function PlayerDataService.push(player)
 	local session = sessions[player]
@@ -267,8 +308,7 @@ function PlayerDataService.push(player)
 		if sessions[player] ~= session or not session.valid or not player.Parent then
 			return
 		end
-		local view = ClientView.build(session.profile, now(), player.DisplayName, player:GetAttribute("ZoneId"))
-		Remotes.event("DataUpdated"):FireClient(player, view)
+		Remotes.event("DataUpdated"):FireClient(player, PlayerDataService.buildView(player, session.profile))
 	end)
 end
 
@@ -277,7 +317,13 @@ function PlayerDataService.snapshot(player)
 	if not session or not session.valid then
 		return nil
 	end
-	return ClientView.build(session.profile, now(), player.DisplayName, player:GetAttribute("ZoneId"))
+	return PlayerDataService.buildView(player, session.profile)
+end
+
+function PlayerDataService.buildView(player, profile)
+	local extra = viewExtraProvider and viewExtraProvider(player) or {}
+	extra.name = player.DisplayName
+	return ClientView.build(profile, now(), extra)
 end
 
 ---------------------------------------------------------------------------
@@ -289,9 +335,9 @@ local function updateLeaderstats(player, profile)
 	if not ls then
 		return
 	end
-	local w = Wealth.compute(profile)
-	ls.Patrimonio.Value = math.floor(w.netWorth)
-	ls.Nivel.Value = profile.level
+	ls.Moedas.Value = math.floor(profile.coins)
+	ls.Renda.Value = math.floor(Income.totalRate(profile))
+	ls.Roubos.Value = profile.stats.stolen
 end
 
 local function onPlayerAdded(player)
@@ -321,9 +367,7 @@ local function onPlayerAdded(player)
 	if #issues > 0 then
 		warn("[PlayerData] integridade corrigida para " .. player.Name .. ": " .. table.concat(issues, "; "))
 	end
-	BankMath.settle(data, t) -- produção offline (limitada em BankConfig.MaxOfflineSeconds)
-	ProfileOps.refreshPeriods(data, t)
-	ProfileOps.checkAchievements(data, t)
+	ProfileOps.refreshPeriods(data, t) -- a produção offline já está nos horários de cada criatura
 
 	local session = {
 		profile = data,
@@ -336,12 +380,11 @@ local function onPlayerAdded(player)
 
 	local ls = Instance.new("Folder")
 	ls.Name = "leaderstats"
-	local nw = Instance.new("NumberValue")
-	nw.Name = "Patrimonio"
-	nw.Parent = ls
-	local lv = Instance.new("IntValue")
-	lv.Name = "Nivel"
-	lv.Parent = ls
+	for _, def in ipairs({ { "Moedas", "NumberValue" }, { "Renda", "NumberValue" }, { "Roubos", "IntValue" } }) do
+		local v = Instance.new(def[2])
+		v.Name = def[1]
+		v.Parent = ls
+	end
 	ls.Parent = player
 	updateLeaderstats(player, data)
 

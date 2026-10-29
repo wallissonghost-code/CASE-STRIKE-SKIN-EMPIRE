@@ -1,7 +1,8 @@
--- Teste de fumaça do SERVIDOR real (src/server + src/shared) num ambiente Roblox simulado.
--- Cobre: carga/gravação com trava de sessão, remotes, deduplicação de pedidos, limite de
--- frequência, abertura automática, venda/banco via remotes, falhas de DataStore,
--- desconexão, reinício do servidor (persistência) e vários jogadores simultâneos.
+-- Teste de fumaça do SERVIDOR e do CLIENTE reais (src/) num ambiente Roblox simulado.
+-- Cobre: carga/gravação com trava de sessão, distribuição das bases, esteira, ovos,
+-- coleta dentro da base, escudo, roubo completo (pegar, defender, tempo esgotado, saídas),
+-- remotes com deduplicação e limite de frequência, falhas de DataStore, reinício do servidor,
+-- servidor cheio e a interface real conectada ao servidor.
 
 local M = __mock
 
@@ -25,6 +26,13 @@ local function truthy(v, msg)
 	if not v then
 		error(msg or "esperado verdadeiro", 2)
 	end
+end
+local function count(t)
+	local n = 0
+	for _ in pairs(t) do
+		n = n + 1
+	end
+	return n
 end
 
 ---------------------------------------------------------------------------
@@ -81,17 +89,25 @@ local function bootServer(jobId)
 	moduleCache = {}
 	M.fired = {}
 	local g, RS = M.newGame(jobId)
-	mount(RS, "Shared", "src/shared")
+	local shared = mount(RS, "Shared", "src/shared")
 	local server = mount(g:GetService("ServerScriptService"), "Server", "src/server")
-	local main = server:FindFirstChild("Main")
 	M.run(function()
-		require(main)
+		require(server:FindFirstChild("Main"))
 	end)
+	local svc = function(name)
+		return moduleCache[server.Services:FindFirstChild(name)]
+	end
 	return {
 		remote = function(name)
 			return RS:FindFirstChild("Remotes"):FindFirstChild(name)
 		end,
-		pds = moduleCache[server.Services.PlayerDataService],
+		pds = svc("PlayerDataService"),
+		base = svc("BaseService"),
+		conveyor = svc("ConveyorService"),
+		steal = svc("StealService"),
+		events = svc("EventService"),
+		map = svc("MapService"),
+		eventConfig = moduleCache[shared.Config.EventConfig],
 	}
 end
 
@@ -111,246 +127,441 @@ local function lastView(player)
 	end
 end
 
-local STORE = "CaseStrike_Profiles_v1"
+local function notes(player, kind)
+	local out = {}
+	for _, f in ipairs(M.fired) do
+		if f.remote == "Notify" and (f.player == player or f.all) and (not kind or f.data.kind == kind) then
+			table.insert(out, f.data.text)
+		end
+	end
+	return out
+end
+
+local function makeChar(p, x, z)
+	local char = M.instance("Model", p.Name)
+	local hrp = M.instance("Part", "HumanoidRootPart")
+	hrp.Position = Vector3.new(x or 0, 3, z or 0)
+	hrp.Parent = char
+	local hum = M.instance("Humanoid", "Humanoid")
+	hum.Parent = char
+	p.Character = char
+	char.Parent = workspace
+	return char
+end
+
+local function moveTo(p, x, z)
+	p.Character.HumanoidRootPart.Position = Vector3.new(x, 3, z)
+end
+
+local function join(S, id, name)
+	local p = M.newPlayer(id, name)
+	makeChar(p, 0, 30)
+	M.addPlayer(p)
+	M.advance(1)
+	return p
+end
+
+local function triggerPrompt(prompt, player)
+	game:GetService("ProximityPromptService").PromptTriggered:Fire(prompt, player)
+	M.advance(0.05)
+end
+
+local function findPrompt(container, attr, value)
+	for _, d in ipairs(container:GetDescendants()) do
+		if d.ClassName == nil and rawget(d, "__class") == "ProximityPrompt" and d:GetAttribute(attr) == value then
+			return d
+		end
+	end
+end
+
+local STORE = "MutantFactory_Profiles_v1"
 
 ---------------------------------------------------------------------------
 print("== Servidor simulado ==")
 
 local S = bootServer("job-A")
-local alice = M.newPlayer(101, "Alice")
-M.addPlayer(alice)
-M.advance(2)
+-- horário fixo fora de eventos para resultados previsíveis
+local EC = S.eventConfig
+M.epoch = math.floor((M.epoch) / EC.Period) * EC.Period + 600 - M.clock
+local alice = join(S, 101, "Alice")
+local MapConfig = moduleCache[game:GetService("ReplicatedStorage").Shared.Config.MapConfig]
 
-test("servidor inicia, cria remotes e lobby sem erros", function()
-	truthy(S.remote("RequestCaseOpen"))
-	truthy(S.remote("DataUpdated"))
-	truthy(workspace:FindFirstChild("Lobby"), "lobby construído")
+test("servidor inicia, cria remotes, mapa e 6 bases", function()
+	truthy(S.remote("EggAction") and S.remote("Notify"))
+	local world = workspace:FindFirstChild("MutantWorld")
+	truthy(world, "mapa construído")
+	for i = 1, 6 do
+		truthy(world:FindFirstChild("Base" .. i), "base " .. i)
+	end
+	truthy(world:FindFirstChild("ConveyorBelt"))
 end)
 
-test("perfil carrega com trava de sessão e envia fotografia", function()
+test("perfil carrega com trava de sessão, base atribuída e personagem levado até ela", function()
 	truthy(S.pds.isLoaded(alice))
 	local rec = M.datastore[STORE]["p_101"]
 	truthy(rec and rec.lock and rec.lock.jobId == "job-A", "trava gravada")
+	eq(alice:GetAttribute("BaseIndex"), 1)
+	local pos = alice.Character.HumanoidRootPart.Position
+	eq(MapConfig.baseAt(pos.X, pos.Z), 1, "teleportado para a base")
 	local v = lastView(alice)
 	truthy(v, "DataUpdated enviado")
-	eq(v.credits, 500)
+	eq(v.coins, 300)
+	eq(v.baseIndex, 1)
+	truthy(v.shieldUntil > 0, "proteção de novato")
 	truthy(alice:FindFirstChild("leaderstats"))
 end)
 
-test("abrir caixa via remote desconta e entrega", function()
-	local res = invoke(S, "RequestCaseOpen", alice, { action = "open", caseId = "urban", quantity = 1, requestId = "req-1" })
+test("esteira solta criaturas e elas andam até sumir", function()
+	M.advance(8)
+	local n = count(S.conveyor._items)
+	truthy(n >= 2, "itens na esteira: " .. n)
+	local first
+	for _, it in pairs(S.conveyor._items) do
+		first = it
+	end
+	local x0 = first.x
+	M.advance(2)
+	truthy(first.x > x0, "andou")
+end)
+
+test("comprar na esteira: precisa estar perto, cobra o preço do servidor e vai para a base", function()
+	local profile = S.pds.getProfile(alice)
+	profile.coins = 1e7
+	local id, item
+	for k, it in pairs(S.conveyor._items) do
+		id, item = k, it
+	end
+	local far = S.conveyor.buy(alice, id)
+	eq(far.error, "too_far")
+	moveTo(alice, item.x, 6)
+	local price = item.offer.price
+	local res = S.conveyor.buy(alice, id)
 	truthy(res.ok, tostring(res.message))
-	eq(#res.data.results, 1)
-	eq(S.pds.getProfile(alice).credits, 475)
+	eq(profile.coins, 1e7 - price)
+	eq(count(profile.creatures), 1)
+	eq(S.conveyor._items[id], nil, "saiu da esteira")
+	local again = S.conveyor.buy(alice, id)
+	eq(again.error, "offer_gone")
+	truthy(workspace.MutantWorld.Creatures:FindFirstChild("c1"), "modelo no pedestal")
 end)
 
-test("pedido repetido (mesmo requestId) não cobra duas vezes", function()
-	local res = invoke(S, "RequestCaseOpen", alice, { action = "open", caseId = "urban", quantity = 1, requestId = "req-1" })
-	truthy(res.ok)
-	eq(S.pds.getProfile(alice).credits, 475)
+test("compra pela tecla E (prompt) na esteira", function()
+	local id, item
+	for k, it in pairs(S.conveyor._items) do
+		id, item = k, it
+	end
+	moveTo(alice, item.x, 5)
+	local before = count(S.pds.getProfile(alice).creatures)
+	local prompt = findPrompt(item.model, "ConveyorId", id)
+	truthy(prompt, "prompt existe")
+	triggerPrompt(prompt, alice)
+	eq(count(S.pds.getProfile(alice).creatures), before + 1)
 end)
 
-test("intervalo mínimo entre aberturas é aplicado pelo servidor", function()
-	M.advance(1.2)
-	local r1 = invoke(S, "RequestCaseOpen", alice, { action = "open", caseId = "urban", quantity = 1 })
-	truthy(r1.ok)
-	local r2 = invoke(S, "RequestCaseOpen", alice, { action = "open", caseId = "urban", quantity = 1 })
-	eq(r2.ok, false)
-	eq(r2.error, "rate_limited")
-	eq(S.pds.getProfile(alice).credits, 450)
-end)
-
-test("pedidos malformados são rejeitados sem alterar nada", function()
-	local before = S.pds.getProfile(alice).credits
-	for _, payload in ipairs({
-		"lixo",
-		{ action = 12 },
-		{ action = "open", caseId = "urban", quantity = 3 },
-		{ action = "open", caseId = "../x", quantity = 1 },
-		{ action = "open", caseId = "urban", quantity = 1, cost = -999999 },
-		{ action = "inexistente" },
-	}) do
-		M.advance(1.2)
-		local res = invoke(S, "RequestCaseOpen", alice, payload)
-		if type(payload) == "table" and payload.cost then
-			-- valores econômicos do cliente são ignorados: cobra o preço real
-			truthy(res.ok)
-			before = before - 25
+test("ovo via remote; pedido repetido não cobra duas vezes; formato inválido rejeitado", function()
+	local profile = S.pds.getProfile(alice)
+	local coins = profile.coins
+	local res = invoke(S, "EggAction", alice, { action = "hatch", eggId = "raro", requestId = "egg-1" })
+	truthy(res.ok, tostring(res.message))
+	truthy(res.data.speciesId)
+	eq(profile.coins, coins - 10000)
+	local again = invoke(S, "EggAction", alice, { action = "hatch", eggId = "raro", requestId = "egg-1" })
+	truthy(again.ok)
+	eq(profile.coins, coins - 10000, "não cobrou de novo")
+	for _, payload in ipairs({ "lixo", { action = 5 }, { action = "hatch", eggId = "../x" }, { action = "hatch", eggId = "basico", price = -1 } }) do
+		M.advance(1)
+		local r = invoke(S, "EggAction", alice, payload)
+		if type(payload) == "table" and payload.price then
+			truthy(r.ok, "preço do cliente ignorado")
+			coins = coins - 300
 		else
-			eq(res.ok, false)
+			eq(r.ok, false)
 		end
 	end
-	eq(S.pds.getProfile(alice).credits, before)
+	eq(profile.coins, coins - 10000)
 end)
 
-test("venda via remote e proteção contra repetição", function()
-	local profile = S.pds.getProfile(alice)
-	local uid
-	for u in pairs(profile.inventory) do
-		uid = u
-		break
+test("limite de frequência dos ovos", function()
+	M.advance(5)
+	local limited = false
+	for _ = 1, 8 do
+		local r = invoke(S, "EggAction", alice, { action = "hatch", eggId = "basico" })
+		if r.error == "rate_limited" then
+			limited = true
+		end
 	end
-	local credits = profile.credits
-	local res = invoke(S, "InventoryAction", alice, { action = "sell", uids = { uid } })
+	truthy(limited)
+end)
+
+test("coletar só dentro da própria base", function()
+	M.advance(30)
+	moveTo(alice, 0, 0)
+	local out = invoke(S, "BaseAction", alice, { action = "collect" })
+	eq(out.error, "not_in_base")
+	local x, z = MapConfig.toWorld(1, 0, 20)
+	moveTo(alice, x, z)
+	local coins = S.pds.getProfile(alice).coins
+	local res = invoke(S, "BaseAction", alice, { action = "collect" })
 	truthy(res.ok, tostring(res.message))
-	local again = invoke(S, "InventoryAction", alice, { action = "sell", uids = { uid } })
-	eq(again.ok, false)
-	eq(S.pds.getProfile(alice).credits, credits + res.data.credits)
+	truthy(res.data.coins > 0)
+	eq(S.pds.getProfile(alice).coins, coins + res.data.coins)
 end)
 
-test("banco via remotes: depositar, render, resgatar", function()
-	local profile = S.pds.getProfile(alice)
-	local uid
-	for u in pairs(profile.inventory) do
-		uid = u
-		break
+local bob = join(S, 202, "Bob")
+local function aliceUid()
+	local best
+	for uid, c in pairs(S.pds.getProfile(alice).creatures) do
+		if not best or c.pad < S.pds.getProfile(alice).creatures[best].pad then
+			best = uid
+		end
 	end
-	truthy(invoke(S, "BankAction", alice, { action = "deposit", uid = uid }).ok)
-	M.epoch = M.epoch + 3600 -- uma hora depois (relógio do servidor)
-	local res = invoke(S, "BankAction", alice, { action = "claim" })
-	truthy(res.ok, tostring(res.message))
-	truthy(res.data.credits > 0)
-	local sell = invoke(S, "InventoryAction", alice, { action = "sell", uids = { uid } })
-	eq(sell.error, "item_in_bank")
-end)
-
-test("abertura automática respeita início/parada", function()
-	S.pds.getProfile(alice).credits = 10000
-	M.advance(2)
-	local noAuto = invoke(S, "RequestCaseOpen", alice, { action = "open", caseId = "urban", quantity = 1, auto = true })
-	eq(noAuto.error, "auto_inactive")
-	truthy(invoke(S, "RequestCaseOpen", alice, { action = "startAuto", caseId = "urban", quantity = 1 }).ok)
-	for _ = 1, 3 do
-		M.advance(2)
-		local r = invoke(S, "RequestCaseOpen", alice, { action = "open", caseId = "urban", quantity = 1, auto = true })
-		truthy(r.ok, tostring(r.message))
-	end
-	truthy(invoke(S, "RequestCaseOpen", alice, { action = "stopAuto" }).ok)
-	M.advance(2)
-	local after = invoke(S, "RequestCaseOpen", alice, { action = "open", caseId = "urban", quantity = 1, auto = true })
-	eq(after.error, "auto_inactive", "interrompida imediatamente")
-end)
-
-test("vários jogadores simultâneos não interferem", function()
-	local bob = M.newPlayer(202, "Bob")
-	local cara = M.newPlayer(303, "Cara")
-	M.addPlayer(bob)
-	M.addPlayer(cara)
-	M.advance(2)
-	local ra = invoke(S, "RequestCaseOpen", bob, { action = "open", caseId = "urban", quantity = 5 })
-	local rc = invoke(S, "RequestCaseOpen", cara, { action = "open", caseId = "starter", quantity = 1 })
-	truthy(ra.ok and rc.ok)
-	eq(S.pds.getProfile(bob).credits, 375)
-	eq(S.pds.getProfile(cara).credits, 490)
-	local n = 0
-	for _ in pairs(S.pds.getProfile(bob).inventory) do
-		n = n + 1
-	end
-	eq(n, 5)
-	local lb = invoke(S, "LeaderboardRequest", bob, { action = "get" })
-	truthy(lb.ok and #lb.data.server == 3)
-end)
-
-test("salvamento automático grava o inventário", function()
-	M.advance(65)
-	local rec = M.datastore[STORE]["p_202"]
-	truthy(rec and rec.data, "dados gravados")
-	local n = 0
-	for _ in pairs(rec.data.inventory) do
-		n = n + 1
-	end
-	eq(n, 5)
-end)
-
-test("falhas temporárias do DataStore são repetidas", function()
-	local bob = M.players[202]
-	invoke(S, "RequestCaseOpen", bob, { action = "open", caseId = "urban", quantity = 1 })
-	M.failNext = 2
-	M.advance(70)
-	local n = 0
-	for _ in pairs(M.datastore[STORE]["p_202"].data.inventory) do
-		n = n + 1
-	end
-	eq(n, 6)
-	eq(M.failNext, 0)
-end)
-
-test("desconexão grava e libera a trava", function()
-	local cara = M.players[303]
-	local inv = S.pds.getProfile(cara).inventory
-	M.removePlayer(cara)
-	M.advance(3)
-	local rec = M.datastore[STORE]["p_303"]
-	eq(rec.lock, nil, "trava liberada")
-	local n, m = 0, 0
-	for _ in pairs(rec.data.inventory) do
-		n = n + 1
-	end
-	for _ in pairs(inv) do
-		m = m + 1
-	end
-	eq(n, m)
-	eq(S.pds.getProfile(cara), nil)
-end)
-
-test("perfil travado por outro servidor não é carregado nem sobrescrito", function()
-	M.datastore[STORE]["p_404"] = { data = { credits = 999, inventory = {} }, lock = { jobId = "job-OUTRO", time = M.epoch + M.clock } }
-	local dave = M.newPlayer(404, "Dave")
-	M.addPlayer(dave)
-	M.advance(60)
-	truthy(dave.kicked, "jogador desconectado com aviso")
-	eq(M.datastore[STORE]["p_404"].data.credits, 999)
-	eq(M.datastore[STORE]["p_404"].lock.jobId, "job-OUTRO")
-end)
-
-test("trava perdida no meio da sessão impede sobrescrever", function()
-	local bob = M.players[202]
-	M.datastore[STORE]["p_202"].lock = { jobId = "job-INVASOR", time = M.epoch + M.clock }
-	M.datastore[STORE]["p_202"].data.credits = 4242
-	M.advance(65)
-	eq(M.datastore[STORE]["p_202"].data.credits, 4242, "não sobrescreveu")
-	truthy(bob.kicked)
-end)
-
--- desligamento do servidor
-local aliceInventory = {}
-for uid, item in pairs(S.pds.getProfile(alice).inventory) do
-	aliceInventory[uid] = item.defId
+	return best
 end
-local aliceCredits = S.pds.getProfile(alice).credits
-test("BindToClose grava todos os jogadores", function()
-	M.run(function()
-		for _, fn in ipairs(M.closeHandlers) do
-			fn()
-		end
-	end)
-	local rec = M.datastore[STORE]["p_101"]
-	eq(rec.lock, nil)
-	eq(rec.data.credits, aliceCredits)
+local function bobIntoAliceBase(uid)
+	local c = S.pds.getProfile(alice).creatures[uid]
+	local px, pz = MapConfig.padPosition(1, c.pad)
+	moveTo(bob, px + 2, pz)
+end
+local function bobHome()
+	local x, z = MapConfig.toWorld(2, 0, 20)
+	moveTo(bob, x, z)
+end
+
+test("segundo jogador recebe outra base", function()
+	eq(bob:GetAttribute("BaseIndex"), 2)
 end)
 
-print("== Reinício do servidor ==")
-local S2 = bootServer("job-B")
-local alice2 = M.newPlayer(101, "Alice")
-M.addPlayer(alice2)
-M.advance(2)
+test("proteção de novato impede roubo", function()
+	local uid = aliceUid()
+	bobIntoAliceBase(uid)
+	local res = S.steal.begin(bob, alice, uid)
+	eq(res.error, "shielded")
+end)
 
-test("inventário e saldo persistem após reinício", function()
-	local p = S2.pds.getProfile(alice2)
-	truthy(p, "carregou")
-	eq(p.credits, aliceCredits)
-	for uid, defId in pairs(aliceInventory) do
-		truthy(p.inventory[uid], "item " .. uid)
-		eq(p.inventory[uid].defId, defId)
+test("roubo completo: pegar, dono avisado, venda travada, entrega muda o dono e salva os dois", function()
+	M.advance(125) -- termina a proteção de novato
+	local uid = aliceUid()
+	local c = S.pds.getProfile(alice).creatures[uid]
+	local species = c.s
+	local aliceCount = count(S.pds.getProfile(alice).creatures)
+	bobIntoAliceBase(uid)
+	local prompt = findPrompt(workspace.MutantWorld.Creatures, "Uid", uid)
+	truthy(prompt, "prompt de roubo")
+	triggerPrompt(prompt, bob)
+	truthy(S.steal._carries[bob], "Bob está carregando")
+	truthy(bob.Character:FindFirstChild("CarriedCreature"), "criatura na cabeça")
+	truthy(#notes(alice, "theft") >= 1, "Alice avisada")
+	local sell = invoke(S, "BaseAction", alice, { action = "sell", uid = uid, confirm = true })
+	eq(sell.error, "being_stolen")
+	M.advance(1)
+	eq(bob.Character.Humanoid.WalkSpeed, 12, "mais devagar carregando")
+	bobHome()
+	M.advance(0.5)
+	eq(S.steal._carries[bob], nil)
+	eq(count(S.pds.getProfile(alice).creatures), aliceCount - 1)
+	local got
+	for _, bc in pairs(S.pds.getProfile(bob).creatures) do
+		got = bc
 	end
-	local v = lastView(alice2)
-	truthy(v and v.wealth.netWorth >= p.credits)
+	eq(got.s, species)
+	eq(got.origin, "stolen")
+	eq(S.pds.getProfile(bob).stats.stolen, 1)
+	M.advance(4)
+	local recA = M.datastore[STORE]["p_101"].data
+	local recB = M.datastore[STORE]["p_202"].data
+	eq(count(recA.creatures), aliceCount - 1, "vítima salva")
+	eq(count(recB.creatures), 1, "ladrão salvo")
+end)
+
+test("defesa: o dono encosta em quem rouba e a criatura volta", function()
+	local uid = aliceUid()
+	bobIntoAliceBase(uid)
+	local res = S.steal.begin(bob, alice, uid)
+	truthy(res.ok, tostring(res.message))
+	local pos = bob.Character.HumanoidRootPart.Position
+	moveTo(alice, pos.X + 2, pos.Z)
+	M.advance(0.5)
+	eq(S.steal._carries[bob], nil)
+	truthy(S.pds.getProfile(alice).creatures[uid], "voltou para Alice")
+	eq(S.pds.getProfile(alice).stats.defended, 1)
+	eq(bob.Character:FindFirstChild("CarriedCreature"), nil)
+end)
+
+test("tempo esgotado devolve a criatura", function()
+	local uid = aliceUid()
+	local ax, az = MapConfig.toWorld(1, 0, 20)
+	moveTo(alice, ax + 30, az) -- longe
+	bobIntoAliceBase(uid)
+	truthy(S.steal.begin(bob, alice, uid).ok)
+	moveTo(bob, 0, 0) -- foge para a praça e fica parado
+	M.advance(46)
+	eq(S.steal._carries[bob], nil)
+	truthy(S.pds.getProfile(alice).creatures[uid])
+end)
+
+test("escudo: só dentro da base, empurra intrusos e bloqueia roubo", function()
+	local uid = aliceUid()
+	bobIntoAliceBase(uid)
+	moveTo(alice, 0, 0)
+	eq(invoke(S, "BaseAction", alice, { action = "shield" }).error, "not_in_base")
+	local x, z = MapConfig.toWorld(1, 0, 20)
+	moveTo(alice, x, z)
+	local res = invoke(S, "BaseAction", alice, { action = "shield" })
+	truthy(res.ok, tostring(res.message))
+	M.advance(0.5)
+	local bp = bob.Character.HumanoidRootPart.Position
+	truthy(MapConfig.baseAt(bp.X, bp.Z) ~= 1, "Bob foi empurrado para fora")
+	bobIntoAliceBase(uid)
+	eq(S.steal.begin(bob, alice, uid).error, "shielded")
+	eq(invoke(S, "BaseAction", alice, { action = "shield" }).error, "shield_active")
+	M.advance(65)
+	M.advance(1)
+end)
+
+test("escudo ligado com o ladrão ainda dentro devolve a criatura", function()
+	local uid = aliceUid()
+	bobIntoAliceBase(uid)
+	local ax, az = MapConfig.toWorld(1, 20, 20)
+	moveTo(alice, ax, az)
+	truthy(S.steal.begin(bob, alice, uid).ok)
+	truthy(invoke(S, "BaseAction", alice, { action = "shield" }).ok)
+	eq(S.steal._carries[bob], nil)
+	truthy(S.pds.getProfile(alice).creatures[uid])
+	M.advance(72)
+end)
+
+test("ladrão sai do servidor no meio do roubo: criatura volta", function()
+	local cara = join(S, 303, "Cara")
+	local uid = aliceUid()
+	local c = S.pds.getProfile(alice).creatures[uid]
+	local px, pz = MapConfig.padPosition(1, c.pad)
+	moveTo(cara, px + 2, pz)
+	moveTo(alice, 300, 300)
+	truthy(S.steal.begin(cara, alice, uid).ok)
+	M.removePlayer(cara)
+	M.advance(1)
+	eq(S.steal._carries[cara], nil)
+	truthy(S.pds.getProfile(alice).creatures[uid])
+	truthy(workspace.MutantWorld.Creatures:FindFirstChild(uid), "modelo de volta ao pedestal")
+end)
+
+test("melhorias, poções, venda e missões via remotes", function()
+	local profile = S.pds.getProfile(alice)
+	profile.coins = 1e8
+	local slots = invoke(S, "BaseAction", alice, { action = "upgrade", upgradeId = "slots" })
+	truthy(slots.ok, tostring(slots.message))
+	M.advance(0.1)
+	eq(lastView(alice).slots, 10)
+	truthy(invoke(S, "EggAction", alice, { action = "buyPotion", potionId = "sorte" }).ok)
+	truthy(invoke(S, "EggAction", alice, { action = "usePotion", potionId = "sorte" }).ok)
+	M.advance(0.1)
+	truthy(lastView(alice).luck > 0)
+	local uid = aliceUid()
+	local n = count(profile.creatures)
+	local sold = invoke(S, "BaseAction", alice, { action = "sell", uid = uid, confirm = true })
+	truthy(sold.ok, tostring(sold.message))
+	eq(count(profile.creatures), n - 1)
+	eq(invoke(S, "BaseAction", alice, { action = "upgrade", upgradeId = "nada" }).ok, false)
+	local gift = invoke(S, "ClaimAction", alice, { action = "gift" })
+	truthy(gift.ok, tostring(gift.message))
+	eq(invoke(S, "ClaimAction", alice, { action = "gift" }).error, "already_claimed")
+	local studioOnly = invoke(S, "SettingsAction", alice, { action = "testEvent", eventId = "hora_sorte" })
+	eq(studioOnly.error, "forbidden", "evento de teste só no Studio")
+	local set = invoke(S, "SettingsAction", alice, { action = "set", key = "reduceEffects", value = true })
+	truthy(set.ok)
+end)
+
+test("evento começa: todos são avisados e a sorte da esteira/ovos muda", function()
+	S.events.force("hora_sorte", 60)
+	local found = false
+	for _, t in ipairs(notes(alice, "event")) do
+		if string.find(t, "Hora da Sorte", 1, true) then
+			found = true
+		end
+	end
+	truthy(found, "aviso do evento")
+	M.advance(0.2)
+	truthy(lastView(alice).event and lastView(alice).event.id == "hora_sorte")
+	EC.override = nil
+end)
+
+test("renascimento via remote", function()
+	local profile = S.pds.getProfile(alice)
+	profile.coins = 1e7
+	local wrong = invoke(S, "ClaimAction", alice, { action = "rebirth", phrase = "sim" })
+	eq(wrong.error, "confirmation_required")
+	local res = invoke(S, "ClaimAction", alice, { action = "rebirth", phrase = "RENASCER" })
+	truthy(res.ok, tostring(res.message))
+	profile = S.pds.getProfile(alice) -- o pedido recusado antes restaurou a cópia de segurança
+	eq(profile.rebirths, 1)
+	eq(count(profile.creatures), 0)
+	for _, m in ipairs(workspace.MutantWorld.Creatures:GetChildren()) do
+		truthy(m:GetAttribute("OwnerUserId") ~= 101, "modelo da Alice sobrou: " .. m.Name)
+	end
+end)
+
+test("ranking do servidor", function()
+	local r = invoke(S, "RankingRequest", bob, { action = "get" })
+	truthy(r.ok)
+	eq(#r.data, 2)
+end)
+
+test("servidor cheio: 7º jogador é avisado", function()
+	local extra = {}
+	for i = 1, 4 do
+		extra[i] = join(S, 400 + i, "P" .. i)
+	end
+	local seventh = join(S, 499, "Sétimo")
+	truthy(seventh.kicked and string.find(seventh.kicked, "cheio"), "expulso com aviso")
+	for _, p in ipairs(extra) do
+		M.removePlayer(p)
+	end
+	M.advance(2)
+end)
+
+test("falhas temporárias do DataStore são repetidas e o salvamento conclui", function()
+	S.pds.getProfile(bob).coins = 4242
+	M.failNext = 2
+	M.advance(70) -- autosave
+	eq(M.datastore[STORE]["p_202"].data.coins, 4242)
+end)
+
+local bobCoins = S.pds.getProfile(bob).coins
+local bobCreatures = count(S.pds.getProfile(bob).creatures)
+
+test("perfil travado por outro servidor não é carregado", function()
+	M.datastore[STORE]["p_777"] = { data = { coins = 5 }, lock = { jobId = "job-X", time = M.epoch + M.clock } }
+	local p = M.newPlayer(777, "Travado")
+	makeChar(p, 0, 0)
+	M.addPlayer(p)
+	M.advance(40)
+	truthy(p.kicked, "expulso com aviso")
+	eq(M.datastore[STORE]["p_777"].data.coins, 5, "dados intactos")
+end)
+
+test("saída libera a trava e reinício do servidor mantém moedas e criaturas", function()
+	M.removePlayer(bob)
+	M.advance(2)
+	local rec = M.datastore[STORE]["p_202"]
+	eq(rec.lock, nil, "trava liberada")
+	for _, f in ipairs(M.closeHandlers) do
+		M.run(f)
+	end
+	local S2 = bootServer("job-B")
+	local bob2 = join(S2, 202, "Bob")
+	M.advance(2)
+	local p = S2.pds.getProfile(bob2)
+	truthy(p, "carregou")
+	eq(p.coins, bobCoins)
+	eq(count(p.creatures), bobCreatures)
+	S = S2
+	bob = bob2
 end)
 
 test("nenhum aviso inesperado no servidor", function()
 	local unexpected = {}
 	for _, w in ipairs(M.warnings or {}) do
-		if not string.find(w, "UpdateAsync falhou") and not string.find(w, "travado por outro servidor") and not string.find(w, "trava perdida") then
+		if not string.find(w, "UpdateAsync falhou") and not string.find(w, "travado por outro servidor") then
 			table.insert(unexpected, w)
 		end
 	end
@@ -361,10 +572,9 @@ end)
 print("== Cliente simulado (interface real conectada ao servidor) ==")
 
 local Players = game:GetService("Players")
-rawset(Players, "LocalPlayer", alice2)
-M.localPlayer = alice2
-S2.pds.getProfile(alice2).credits = 50000
-S2.pds.getProfile(alice2).level = 20
+rawset(Players, "LocalPlayer", bob)
+M.localPlayer = bob
+S.pds.getProfile(bob).coins = 500000
 
 local clientFolder = mount(M.instance("Folder", "StarterPlayerScripts"), "Client", "src/client")
 local clientOk, clientErr = pcall(function()
@@ -373,17 +583,13 @@ local clientOk, clientErr = pcall(function()
 	end)
 end)
 M.advance(3)
-local UI = moduleCache[clientFolder.Controllers.UIController]
-local Store = moduleCache[clientFolder.Util.Store]
+local UI = clientFolder.Controllers and moduleCache[clientFolder.Controllers:FindFirstChild("UIController")]
+local Store = clientFolder.Util and moduleCache[clientFolder.Util:FindFirstChild("Store")]
 
-local function guiRoot()
-	return alice2.PlayerGui
-end
--- procura primeiro nos diálogos e na roleta, depois nos painéis e por fim no HUD
 local function screensInOrder()
 	local first, last, middle = {}, {}, {}
-	for _, g in ipairs(alice2.PlayerGui:GetChildren()) do
-		if g.Name == "Dialogs" or g.Name == "CaseOpening" then
+	for _, g in ipairs(bob.PlayerGui:GetChildren()) do
+		if g.Name == "Dialogs" or g.Name == "Hatch" then
 			table.insert(first, g)
 		elseif g.Name == "MainHUD" or g.Name == "Toasts" then
 			table.insert(last, g)
@@ -391,9 +597,6 @@ local function screensInOrder()
 			table.insert(middle, g)
 		end
 	end
-	table.sort(first, function(a, b)
-		return a.Name == "Dialogs"
-	end)
 	local out = {}
 	for _, list in ipairs({ first, middle, last }) do
 		for _, g in ipairs(list) do
@@ -426,385 +629,69 @@ local function click(text, plain)
 	local b = findButton(text, plain)
 	assert(b, "botão não encontrado: " .. text)
 	b.Activated:Fire()
-	M.advance(0.5)
+	M.advance(0.6)
 	return b
-end
-local function profile()
-	return S2.pds.getProfile(alice2)
-end
-local function itemCount()
-	local n = 0
-	for _ in pairs(profile().inventory) do
-		n = n + 1
-	end
-	return n
 end
 
 test("cliente inicia sem erros e recebe a fotografia", function()
 	truthy(clientOk, tostring(clientErr))
-	for _, name in ipairs({ "MainHUD", "CaseOpening", "Dialogs" }) do
-		truthy(guiRoot():FindFirstChild(name), "ScreenGui " .. name)
-	end
-	truthy(Store.view, "fotografia recebida")
-	eq(Store.view.credits, 50000)
+	truthy(bob.PlayerGui:FindFirstChild("MainHUD"), "HUD")
+	truthy(Store and Store.view, "fotografia recebida")
+	eq(Store.view.coins, 500000)
 end)
 
-test("todos os painéis abrem e atualizam sem erros", function()
-	for _, name in ipairs({ "Shop", "Inventory", "Bank", "Upgrade", "Collections", "Missions", "Gifts", "Luck", "Attributes", "Rebirth", "Leaderboard", "Battle", "Zones", "Potions" }) do
+test("todos os painéis abrem sem erros", function()
+	for _, name in ipairs({ "Eggs", "Base", "Index", "Missions", "Gifts", "Potions", "Rebirth", "Ranking", "Settings" }) do
 		UI.open(name)
 		M.advance(0.3)
 		eq(UI.current, name)
 	end
-	UI.open("CaseWindow", { caseId = "neon" })
-	M.advance(0.5)
-	UI.close()
-	eq(UI.current, nil)
+	UI.close(true)
 end)
 
-test("apenas um painel aberto por vez", function()
-	UI.open("Shop")
-	UI.open("Bank")
-	M.advance(0.3) -- deixa terminar a animação de fechamento de painéis anteriores
-	local visible = 0
-	for _, d in ipairs(guiRoot():GetDescendants()) do
-		if d.Name == "Panel" and d.Visible then
-			visible = visible + 1
-		end
-	end
-	eq(visible, 1)
-	for _, name in ipairs({ "CaseShop", "Bank", "Inventory", "UpgradeWorkshop", "Collections", "Missions", "Rewards", "Rankings" }) do
-		truthy(guiRoot():FindFirstChild(name), "ScreenGui " .. name)
-	end
-	UI.close()
-end)
-
-test("fluxo: loja → janela da caixa → ABRIR → roleta → item no inventário", function()
-	local before = itemCount()
-	local credits = profile().credits
-	UI.open("Shop")
-	M.advance(0.2)
-	UI.open("CaseWindow", { caseId = "urban" })
-	M.advance(0.5)
-	click("ABRIR ×1")
-	M.advance(8)
-	eq(itemCount(), before + 1)
-	eq(profile().credits, credits - 25)
-	truthy(findButton("✔ Guardar"), "revelação exibida")
-	click("✔ Guardar")
-end)
-
-test("fluxo: abrir ×10 com confirmação do custo total", function()
-	local before = itemCount()
-	UI.open("CaseWindow", { caseId = "tactical" })
-	M.advance(0.5)
-	click("×10")
-	click("ABRIR ×10")
-	truthy(findButton("Abrir"), "diálogo de confirmação")
-	click("Abrir")
-	M.advance(8)
-	eq(itemCount(), before + 10)
-	click("✔ Guardar")
-end)
-
-test("fluxo: abertura automática inicia e para pelo botão", function()
-	local before = profile().stats.casesOpened
-	UI.open("CaseWindow", { caseId = "urban" })
-	M.advance(0.5)
-	click("×1")
-	click("🔁 Abertura automática")
-	click("Iniciar")
-	M.advance(25)
-	local during = profile().stats.casesOpened
-	truthy(during > before + 2, "abriu várias: " .. (during - before))
-	click("⏹ PARAR")
-	M.advance(12)
-	local after = profile().stats.casesOpened
-	truthy(after - during <= 1, "parou (no máximo a abertura em andamento)")
-	UI.close()
-end)
-
-test("fluxo: inventário → favoritar, equipar, depositar, retirar", function()
-	UI.open("Inventory")
-	M.advance(0.5)
-	local card
-	for _, d in ipairs(guiRoot():FindFirstChild("Inventory"):GetDescendants()) do
-		if d:IsA("TextButton") and d.Visible and d.Text == "" and d.LayoutOrder == 1 and d.Parent and d.Parent:FindFirstChild("UIGridLayout") then
-			card = d
-			break
-		end
-	end
-	assert(card, "cartão do inventário")
-	card.Activated:Fire()
+test("abrir ovo pela interface entrega uma criatura", function()
+	local before = count(S.pds.getProfile(bob).creatures)
+	UI.open("Eggs", { eggId = "basico" })
 	M.advance(0.3)
-	click("⭐ Favoritar")
-	local fav = 0
-	for _, it in pairs(profile().inventory) do
-		if it.favorite then
-			fav = fav + 1
-		end
-	end
-	eq(fav, 1)
-	click("🎽 Equipar")
-	local bankBefore = 0
-	for _, it in pairs(profile().inventory) do
-		if it.location == "bank" then
-			bankBefore = bankBefore + 1
-		end
-	end
-	click("🏦 Depositar")
-	local inBank = -bankBefore
-	for _, it in pairs(profile().inventory) do
-		if it.location == "bank" then
-			inBank = inBank + 1
-		end
-	end
-	eq(inBank, 1)
-	click("↩ Retirar do banco")
-	click("₵ Vender")
-	truthy(findButton("Vender favorita"), "favorita exige confirmação digitada")
-	local confirmBtn = findButton("Vender favorita")
-	confirmBtn.Activated:Fire()
-	M.advance(0.5)
-	local still = 0
-	for _, it in pairs(profile().inventory) do
-		if it.favorite then
-			still = still + 1
-		end
-	end
-	eq(still, 1, "sem digitar VENDER nada é vendido")
-	click("Cancelar")
-	UI.close()
+	click("ABRIR", true)
+	M.advance(4)
+	eq(count(S.pds.getProfile(bob).creatures), before + 1)
+	UI.close(true)
 end)
 
-test("fluxo: banco resgata e oficina aplica melhoria garantida", function()
-	local p = profile()
-	p.materials.scrap = 100
-	p.materials.pigment = 20
-	UI.open("Bank")
-	M.advance(0.5)
-	click("Depositar")
-	M.epoch = M.epoch + 600
-	click("RESGATAR")
-	truthy(p.stats.bankClaimedTotal > 0, "resgatou")
-	UI.close()
-	local uid
-	for u, it in pairs(p.inventory) do
-		if it.location == "inventory" then
-			uid = u
-			break
-		end
-	end
-	UI.open("Upgrade", { uid = uid })
-	M.advance(0.5)
-	click("Aplicar")
-	click("Aplicar")
-	truthy(p.inventory[uid].upgrades.finish, "melhoria aplicada")
-	UI.close()
+test("base pela interface: melhorar e coletar", function()
+	UI.open("Base")
+	M.advance(0.3)
+	local lvl = S.pds.getProfile(bob).upgrades.storage
+	click("Cofre maior", true)
+	eq(S.pds.getProfile(bob).upgrades.storage, lvl + 1)
+	UI.close(true)
 end)
 
-test("fluxo: presentes diários e missões pela interface", function()
+test("presente diário pela interface", function()
 	UI.open("Gifts")
-	M.advance(0.5)
-	click("Resgatar dia", true)
-	eq(profile().rewards.dailyStreak, 1)
-	UI.close()
+	M.advance(0.3)
+	click("RESGATAR", true)
+	eq(S.pds.getProfile(bob).gifts.streak >= 1, true)
+	UI.close(true)
 end)
 
-test("HUD mostra patrimônio, saldo e nível atualizados", function()
-	M.advance(1)
-	local v = Store.view
-	truthy(v.wealth.netWorth >= v.credits)
+test("aviso de roubo aparece para a vítima", function()
+	S.base.notify(bob, "theft", "🚨 Teste pegou seu Gosminha!")
+	M.advance(0.5)
 	local found = false
-	for _, d in ipairs(guiRoot():GetDescendants()) do
-		if d:IsA("TextLabel") and d.Text and string.find(d.Text, "Nível " .. v.level, 1, true) then
+	for _, d in ipairs(bob.PlayerGui:GetDescendants()) do
+		if d.Text and string.find(tostring(d.Text), "pegou seu Gosminha", 1, true) then
 			found = true
 		end
 	end
-	truthy(found, "barra de XP com nível")
-end)
-
-test("V4: abrir ×25 mostra só a grade de prêmios (sem 25 animações)", function()
-	local p = profile()
-	p.attributes.multiOpen = 1
-	p.credits = p.credits + 5000
-	S2.pds.push(alice2)
-	M.advance(0.5)
-	local before = itemCount()
-	UI.open("CaseWindow", { caseId = "starter" })
-	M.advance(0.5)
-	click("×25")
-	click("ABRIR ×25")
-	click("Abrir")
-	M.advance(3)
-	eq(itemCount(), before + 25)
-	for _, d in ipairs(guiRoot():FindFirstChild("CaseOpening"):GetDescendants()) do
-		if d.Name == "Strip1" then
-			eq(d.Parent.Visible, false, "faixas da roleta ocultas no ×25")
-		end
-	end
-	truthy(findButton("✔ Guardar"), "grade de prêmios exibida")
-	click("✔ Guardar")
-end)
-
-test("V4: inspeção 3D com aproximar/afastar", function()
-	UI.open("Inventory")
-	M.advance(0.5)
-	local card
-	for _, d in ipairs(guiRoot():FindFirstChild("Inventory"):GetDescendants()) do
-		if d:IsA("TextButton") and d.Visible and d.Text == "" and d.LayoutOrder == 1 and d.Parent and d.Parent:FindFirstChild("UIGridLayout") then
-			card = d
-			break
-		end
-	end
-	card.Activated:Fire()
-	M.advance(0.3)
-	click("🔍 Inspecionar")
-	click("＋ Aproximar")
-	click("－ Afastar")
-	click("↺ Girar automático")
-	click("✕ Fechar inspeção")
-	eq(findButton("✕ Fechar inspeção"), nil)
-end)
-
-test("V4: expor no showroom cria a vitrine visível a todos", function()
-	truthy(alice2:GetAttribute("ShowroomBooth"), "vitrine atribuída")
-	local target
-	for uid, it in pairs(profile().inventory) do
-		if it.location == "inventory" and not it.showcase then
-			target = uid
-			break
-		end
-	end
-	UI.close(true)
-	UI.open("Inventory", { uid = target })
-	M.advance(0.5)
-	click("🖼 Expor no showroom")
-	M.advance(1)
-	local booth = workspace.Lobby.Showroom.Booths:FindFirstChild("Booth" .. alice2:GetAttribute("ShowroomBooth"))
-	local display = booth:FindFirstChild("Display")
-	truthy(display, "vitrine montada")
-	local pedestals = 0
-	for _, d in ipairs(display:GetChildren()) do
-		if d.Name == "Pedestal" then
-			pedestals = pedestals + 1
-		end
-	end
-	eq(pedestals, 1)
-	UI.close()
-end)
-
-test("V4: atributos pela interface e efeitos reduzidos", function()
-	local p = profile()
-	p.credits = p.credits + 100000
-	UI.open("Attributes")
-	M.advance(0.5)
-	local before = p.attributes.luck
-	click("Melhorar")
-	truthy(p.attributes.luck == before + 1 or p.bank.upgrades.efficiency > 0, "atributo comprado")
-	click("🌙 Reduzir efeitos visuais", true)
-	eq(p.settings.reduceEffects, true)
-	UI.close()
-end)
-
-test("V4: venda de Secreta exige confirmação explícita no servidor", function()
-	local p = profile()
-	local uid = "i" .. p.nextUid
-	p.nextUid = p.nextUid + 1
-	p.inventory[uid] = { uid = uid, defId = "phantom_05", obtainedAt = 0, favorite = false, equipped = false, location = "inventory", upgrades = {} }
-	local res = invoke(S2, "InventoryAction", alice2, { action = "sell", uids = { uid } })
-	eq(res.error, "valuable_locked")
-	truthy(p.inventory[uid])
-	local ok = invoke(S2, "InventoryAction", alice2, { action = "sell", uids = { uid }, confirmValuable = true })
-	truthy(ok.ok)
-end)
-
-test("V4: placa acima do personagem mostra nome, título, nível e patrimônio", function()
-	local character = M.instance("Model", "Alice")
-	local head = M.instance("Part", "Head")
-	head.Parent = character
-	local hrp = M.instance("Part", "HumanoidRootPart")
-	hrp.Position = Vector3.new(0, 3, 9)
-	hrp.Parent = character
-	alice2.Character = character
-	alice2.CharacterAdded:Fire(character)
-	M.advance(0.5)
-	local plate = head:FindFirstChild("CollectorPlate")
-	truthy(plate, "placa criada")
-	eq(plate.PlayerName.Text, "Alice")
-	truthy(string.find(plate.Stats.Text, "Nv ", 1, true))
-end)
-
-test("zonas: servidor detecta a posição e só dá sorte com a zona desbloqueada", function()
-	local p = profile()
-	local hrp = alice2.Character.HumanoidRootPart
-	hrp.Position = Vector3.new(235, 3, 0) -- dentro da Zona 2
-	M.advance(1.5)
-	eq(alice2:GetAttribute("ZoneId"), "zone2")
-	local odds = invoke(S2, "RequestCaseOpen", alice2, { action = "odds", caseId = "starter" })
-	local luckLocked = odds.data.luck
-	p.credits = p.credits + 10000
-	local buy = invoke(S2, "ProgressionAction", alice2, { action = "buyZone", zoneId = "zone2" })
-	truthy(buy.ok, tostring(buy.message))
-	local odds2 = invoke(S2, "RequestCaseOpen", alice2, { action = "odds", caseId = "starter" })
-	truthy(odds2.data.luck > luckLocked, "sorte da zona aplicada")
-	hrp.Position = Vector3.new(0, 3, 9)
-	M.advance(1.5)
-	eq(alice2:GetAttribute("ZoneId"), "zone1")
-	local odds3 = invoke(S2, "RequestCaseOpen", alice2, { action = "odds", caseId = "starter" })
-	truthy(odds3.data.luck < odds2.data.luck, "fora da zona sem bônus")
-end)
-
-test("poções: ativar pela interface e efeito com tempo", function()
-	local p = profile()
-	p.potions.luck = 2
-	S2.pds.push(alice2)
-	M.advance(0.5)
-	UI.open("Potions")
-	M.advance(0.5)
-	click("Ativar " .. "Poção da Sorte")
-	eq(p.potions.luck, 1)
-	truthy(p.activePotions.luck > M.epoch + M.clock, "efeito ativo")
-	UI.close()
-end)
-
-test("loja em seções e estoque limitado diário", function()
-	local p = profile()
-	p.level = 25
-	p.credits = p.credits + 10000000
-	UI.open("Shop")
-	M.advance(0.5)
-	for i = 1, 5 do
-		local r = invoke(S2, "RequestCaseOpen", alice2, { action = "open", caseId = "lucky", quantity = 1 })
-		truthy(r.ok, tostring(r.message))
-		M.advance(1.2)
-	end
-	local r6 = invoke(S2, "RequestCaseOpen", alice2, { action = "open", caseId = "lucky", quantity = 1 })
-	eq(r6.error, "out_of_stock")
-	UI.close()
-end)
-
-test("índice por raridade e loja com seções", function()
-	UI.open("Collections")
-	M.advance(0.5)
-	click("Ver por raridade")
-	truthy(findButton("Ver por coleção"), "modo raridade ativo")
-	UI.close(true)
-	UI.open("Shop")
-	M.advance(0.3)
-	local found = {}
-	for _, d in ipairs(guiRoot():FindFirstChild("CaseShop"):GetDescendants()) do
-		if d:IsA("TextLabel") and d.Text and string.find(d.Text, "~ ", 1, true) then
-			found[d.Text] = true
-		end
-	end
-	truthy(found["~ Caixas de Nível ~"] and found["~ Caixas Especiais ~"] and found["~ Estoque Limitado ~"], "três seções")
-	UI.close(true)
+	truthy(found)
 end)
 
 test("nenhum aviso inesperado no cliente", function()
 	local unexpected = {}
 	for _, w in ipairs(M.warnings or {}) do
-		if not string.find(w, "UpdateAsync falhou") and not string.find(w, "travado por outro servidor") and not string.find(w, "trava perdida") then
+		if not string.find(w, "UpdateAsync falhou") and not string.find(w, "travado por outro servidor") then
 			table.insert(unexpected, w)
 		end
 	end

@@ -1,25 +1,14 @@
--- Testes de lógica (executados por tests/harness.py fora do Roblox).
--- Cobrem os testes obrigatórios 1–14 e 16 da especificação no nível da lógica do servidor.
--- Os itens 15, 17 e 18 exigem o Roblox Studio e estão no checklist manual (docs/TESTES.md).
+-- Testes de lógica do MUTANT FACTORY (módulos compartilhados reais, sem Roblox).
 
-local RarityConfig = shared_module("Config/RarityConfig")
-local SkinDefinitions = shared_module("Config/SkinDefinitions")
-local CaseDefinitions = shared_module("Config/CaseDefinitions")
-local EconomyConfig = shared_module("Config/EconomyConfig")
-local BankConfig = shared_module("Config/BankConfig")
-local ProgressionConfig = shared_module("Config/ProgressionConfig")
-local MissionDefinitions = shared_module("Config/MissionDefinitions")
-local FeatureFlags = shared_module("Config/FeatureFlags")
-local UpgradeRecipes = shared_module("Config/UpgradeRecipes")
-local Probability = shared_module("Logic/Probability")
-local BankMath = shared_module("Logic/BankMath")
-local Wealth = shared_module("Logic/Wealth")
+local GameConfig = shared_module("Config/GameConfig")
+local ProgressConfig = shared_module("Config/ProgressConfig")
+local EventConfig = shared_module("Config/EventConfig")
+local MapConfig = shared_module("Config/MapConfig")
+local Odds = shared_module("Logic/Odds")
+local Income = shared_module("Logic/Income")
 local ProfileSchema = shared_module("Logic/ProfileSchema")
 local ProfileOps = shared_module("Logic/ProfileOps")
 local ClientView = shared_module("Logic/ClientView")
-local AutoOpen = shared_module("Logic/AutoOpen")
-local LeaderboardStats = shared_module("Logic/LeaderboardStats")
-local Format = shared_module("Util/Format")
 local TimeUtil = shared_module("Util/TimeUtil")
 
 local passed, failed = 0, 0
@@ -39,7 +28,7 @@ local function eq(a, b, msg)
 	end
 end
 local function near(a, b, tol, msg)
-	if math.abs(a - b) > (tol or 1e-9) then
+	if math.abs(a - b) > (tol or 1e-6) then
 		error((msg or "esperado próximo") .. ": " .. tostring(a) .. " vs " .. tostring(b), 2)
 	end
 end
@@ -49,27 +38,22 @@ local function truthy(v, msg)
 	end
 end
 
-local NOW = 1793000000 -- 2026-10-26 (dentro do Festival das Sombras)
-local function seqRng(values)
-	local i = 0
-	return function()
-		i = i + 1
-		return values[((i - 1) % #values) + 1]
-	end
+-- horário fora de qualquer evento (início de período + 10 min)
+local T0 = 1793000000
+T0 = math.floor(T0 / EventConfig.Period) * EventConfig.Period + 600
+assert(EventConfig.at(T0) == nil)
+
+local seed = 7
+local function rng()
+	seed = (seed * 16807) % 2147483647
+	return seed / 2147483647
 end
-local function lcgRng(seed)
-	local s = seed
-	return function()
-		s = (s * 16807) % 2147483647
-		return s / 2147483647
-	end
+local function ctx(now, locked)
+	return { now = now or T0, rng = rng, locked = locked }
 end
-local function ctx(now, rng)
-	return { now = now or NOW, rng = rng or lcgRng(42) }
-end
-local function fresh(now)
-	local p = ProfileSchema.new(now or NOW)
-	ProfileSchema.validate(p, now or NOW)
+local function newProfile(now)
+	local p = ProfileSchema.new(now or T0)
+	ProfileOps.refreshPeriods(p, now or T0)
 	return p
 end
 local function count(t)
@@ -79,944 +63,483 @@ local function count(t)
 	end
 	return n
 end
-local function firstUid(p)
-	for uid in pairs(p.inventory) do
-		return uid
+local function deepCopy(t)
+	if type(t) ~= "table" then
+		return t
 	end
-end
-local function giveItem(p, defId)
-	local uid = "i" .. p.nextUid
-	p.nextUid = p.nextUid + 1
-	p.inventory[uid] = { uid = uid, defId = defId, obtainedAt = NOW, favorite = false, equipped = false, location = "inventory", upgrades = {} }
-	p.discovered[defId] = NOW
-	return uid
-end
-local function skinOf(caseId, rarity)
-	for _, s in ipairs(SkinDefinitions.ByCase[caseId]) do
-		if s.rarity == rarity then
-			return s
-		end
+	local o = {}
+	for k, v in pairs(t) do
+		o[k] = deepCopy(v)
 	end
+	return o
+end
+local function give(p, speciesId, mutationId, now)
+	local ok, r = ProfileOps.buyFromConveyor(p, ctx(now), { speciesId = speciesId, mutationId = mutationId or "normal", price = 0 })
+	assert(ok, tostring(r))
+	return r.creature
 end
 
--- serialização equivalente às restrições do DataStore (JSON): sem funções, sem tabelas mistas
-local function serialize(v, path)
-	path = path or "perfil"
-	local tv = type(v)
-	if tv == "number" then
-		assert(v == v, "NaN em " .. path)
-		return string.format("%.17g", v)
-	elseif tv == "string" then
-		return string.format("%q", v)
-	elseif tv == "boolean" then
-		return tostring(v)
-	elseif tv == "table" then
-		local n = #v
-		local keys = 0
-		for _ in pairs(v) do
-			keys = keys + 1
+print("== Lógica ==")
+
+test("conteúdo: 16 espécies, 6 mutações, ovos válidos", function()
+	eq(#GameConfig.Species, 16)
+	eq(#GameConfig.MutationOrder, 6)
+	for _, s in ipairs(GameConfig.Species) do
+		truthy(GameConfig.Rarities[s.rarity], "raridade de " .. s.id)
+		truthy(s.income > 0 and s.price > 0)
+	end
+	for _, id in ipairs(GameConfig.EggOrder) do
+		truthy(GameConfig.Eggs[id])
+	end
+end)
+
+test("chances de espécies e mutações somam 100% (com e sem sorte)", function()
+	for _, luck in ipairs({ 0, 0.25, 1, 5 }) do
+		local sp = Odds.speciesTable(GameConfig.Conveyor.RarityWeights, luck)
+		local mu = Odds.mutationTable(luck)
+		local a, b = 0, 0
+		for _, e in ipairs(sp) do
+			a = a + e.p
 		end
-		local parts = {}
-		if n > 0 and keys == n then
-			for i = 1, n do
-				parts[i] = serialize(v[i], path .. "[" .. i .. "]")
-			end
-			return "{" .. table.concat(parts, ",") .. "}"
+		for _, e in ipairs(mu) do
+			b = b + e.p
 		end
-		local sorted = {}
-		for k in pairs(v) do
-			assert(type(k) == "string", "chave não textual em tabela de dicionário: " .. path .. "." .. tostring(k))
-			table.insert(sorted, k)
+		near(a, 1, 1e-9)
+		near(b, 1, 1e-9)
+		local shown = 0
+		for _, v in ipairs(Odds.displayPercents(sp, 2)) do
+			shown = shown + v
 		end
-		table.sort(sorted)
-		for _, k in ipairs(sorted) do
-			table.insert(parts, "[" .. string.format("%q", k) .. "]=" .. serialize(v[k], path .. "." .. k))
-		end
-		return "{" .. table.concat(parts, ",") .. "}"
-	end
-	error("tipo não serializável em " .. path .. ": " .. tv)
-end
-local function roundTrip(p)
-	local s = serialize(p)
-	return assert(load("return " .. s))(), s
-end
-
-print("== Conteúdo e configuração ==")
-
-test("60 skins e 12 caixas com 5 skins cada", function()
-	eq(SkinDefinitions.Count, 60)
-	eq(#CaseDefinitions.Collections, 12)
-	for _, c in ipairs(CaseDefinitions.Collections) do
-		eq(#c.drops, 5, "skins na caixa " .. c.id)
-	end
-	local cats = {}
-	for _, s in ipairs(SkinDefinitions.List) do
-		cats[s.category] = true
-		truthy(RarityConfig.Rarities[s.rarity], "raridade inválida")
-		truthy(s.value >= 1, "valor")
-	end
-	for _, c in ipairs({ "Pistol", "SMG", "Rifle", "Sniper", "Knife" }) do
-		truthy(cats[c], "categoria ausente " .. c)
+		near(shown, 100, 1e-6, "exibição soma 100")
 	end
 end)
 
-test("preços e níveis das 12 caixas", function()
-	local expect = { starter = 10, urban = 25, tactical = 75, neon = 150, shadow = 300, chrome = 600, phantom = 1200, elite = 2500, diamond = 5000, royal = 12000, mythic = 30000, infinity = 100000 }
-	for id, price in pairs(expect) do
-		eq(CaseDefinitions.ById[id].price, price, id)
-	end
-	local levels = { starter = 1, neon = 5, elite = 20, royal = 40, infinity = 75 }
-	for id, lvl in pairs(levels) do
-		eq(CaseDefinitions.ById[id].requiredLevel, lvl, "nível " .. id)
-	end
-	eq(EconomyConfig.StartingCredits, 500)
+test("sorte aumenta raras e mutações, nunca muda comuns para cima", function()
+	local base = Odds.byRarity(Odds.speciesTable(GameConfig.Conveyor.RarityWeights, 0))
+	local lucky = Odds.byRarity(Odds.speciesTable(GameConfig.Conveyor.RarityWeights, 0.5))
+	truthy(lucky.Mythic > base.Mythic and lucky.Legendary > base.Legendary)
+	truthy(lucky.Common < base.Common)
+	local m0 = Odds.mutationTable(0)[1].p
+	local m1 = Odds.mutationTable(0.5)[1].p
+	truthy(m1 < m0, "normal fica menos provável")
+	-- sorte acima do teto é limitada
+	local capped = Odds.speciesTable(GameConfig.Conveyor.RarityWeights, 50)
+	local max = Odds.speciesTable(GameConfig.Conveyor.RarityWeights, GameConfig.Luck.Max)
+	near(capped[1].p, max[1].p, 1e-12)
 end)
 
-test("validador de RNG não encontra erros", function()
-	local DropValidator = shared_module("Logic/DropValidator")
-	local errors = DropValidator.validate()
-	eq(#errors, 0, table.concat(errors, "; "))
+test("evento de mutação multiplica só a mutação dele", function()
+	local ev = EventConfig.force("chuva_dourada", T0, 60)
+	local withEv = Odds.mutationTable(0, ev)
+	EventConfig.override = nil
+	local without = Odds.mutationTable(0)
+	truthy(withEv[2].p > without[2].p * 3, "dourada bem mais comum")
+	near(withEv[2].weight, without[2].weight * 5, 1e-9)
+	eq(withEv[3].weight, without[3].weight)
 end)
 
-test("validador detecta skin inexistente e peso inválido", function()
-	local DropValidator = shared_module("Logic/DropValidator")
-	local c = CaseDefinitions.ById.starter
-	local saved = c.drops[1]
-	c.drops[1] = { skinId = "nao_existe", rarity = "Common", weight = -1 }
-	local errors, bad = DropValidator.validate()
-	c.drops[1] = saved
-	truthy(#errors >= 2 and bad.starter, "erros detectados")
-end)
-
-test("probabilidades somam 100% com e sem sorte", function()
-	for _, c in ipairs(CaseDefinitions.List) do
-		for _, luck in ipairs({ 0, 0.05, 0.25, 5 }) do
-			local t = Probability.computeTable(c, luck)
-			local sum = 0
-			for _, e in ipairs(t) do
-				sum = sum + e.probability
-			end
-			near(sum, 1, 1e-12, "soma " .. c.id)
-			local shown = Probability.displayPercents(t, 3)
-			local s2 = 0
-			for _, v in ipairs(shown) do
-				s2 = s2 + v
-			end
-			near(s2, 100, 1e-6, "percentuais exibidos")
-		end
+test("valor esperado dos ovos fica perto do preço (sem sorte)", function()
+	for _, id in ipairs(GameConfig.EggOrder) do
+		local egg = GameConfig.Eggs[id]
+		local ratio = Odds.expectedEggValue(egg, 0) / egg.price
+		truthy(ratio > 0.85 and ratio < 1.15, id .. " razão " .. ratio)
 	end
 end)
 
-test("sorte aumenta raras, mantém soma e respeita teto", function()
-	local c = CaseDefinitions.ById.phantom
-	local base = Probability.byRarity(Probability.computeTable(c, 0))
-	local lucky = Probability.byRarity(Probability.computeTable(c, 0.40))
-	local capped = Probability.byRarity(Probability.computeTable(c, 99))
-	truthy(lucky.Secret > base.Secret and lucky.Uncommon < base.Uncommon)
-	near(capped.Secret, lucky.Secret, 1e-12, "teto de sorte")
-end)
-
-
-test("valor esperado de cada caixa entre 80% e 95% do preço", function()
-	for _, c in ipairs(CaseDefinitions.List) do
-		local ev = Probability.expectedValue(Probability.computeTable(c, 0), SkinDefinitions)
-		local ratio = ev / c.price
-		truthy(ratio > 0.8 and ratio < 0.95, c.id .. " EV/preço = " .. ratio)
-	end
-end)
-
-test("sorteio segue as probabilidades (simulação 200k)", function()
-	local c = CaseDefinitions.ById.urban
-	local t = Probability.computeTable(c, 0)
-	local rng = lcgRng(7)
+test("sorteio real segue as chances (100 mil ovos)", function()
+	local sp = Odds.speciesTable(GameConfig.Eggs.basico.rarityWeights, 0)
 	local hits = {}
-	local N = 200000
-	for _ = 1, N do
-		local e = Probability.pick(t, rng())
+	local n = 100000
+	for _ = 1, n do
+		local e = Odds.pick(sp, rng())
 		hits[e.rarity] = (hits[e.rarity] or 0) + 1
 	end
-	local expected = Probability.byRarity(t)
-	for r, p in pairs(expected) do
-		near((hits[r] or 0) / N, p, 0.004, "frequência " .. r)
+	local exp = Odds.byRarity(sp)
+	for r, p in pairs(exp) do
+		near((hits[r] or 0) / n, p, 0.01, r)
 	end
 end)
 
-print("== Testes obrigatórios ==")
+test("saldo inicial e base inicial", function()
+	local p = newProfile()
+	eq(p.coins, 300)
+	eq(ProfileSchema.slots(p), 8)
+	eq(count(p.creatures), 0)
+	eq(#p.missions.list, 3)
+end)
 
-test("[1] inventário persiste (ida e volta no formato do DataStore)", function()
-	local p = fresh()
-	local ok = ProfileOps.openCases(p, ctx(), "urban", 5, {})
+test("comprar na esteira cobra, ocupa pedestal e registra no índice", function()
+	local p = newProfile()
+	local ok, r = ProfileOps.buyFromConveyor(p, ctx(), { speciesId = "gosminha", mutationId = "dourada", price = 50 })
 	truthy(ok)
-	local back = roundTrip(p)
-	ProfileSchema.migrate(back, NOW)
-	local issues = ProfileSchema.validate(back, NOW)
-	eq(#issues, 0, "problemas de integridade: " .. table.concat(issues, "; "))
-	eq(count(back.inventory), 5)
-	for uid, item in pairs(p.inventory) do
-		eq(back.inventory[uid].defId, item.defId)
-	end
-	eq(back.credits, p.credits)
-	eq(back.nextUid, p.nextUid)
+	eq(p.coins, 250)
+	eq(r.creature.pad, 1)
+	truthy(r.isNew)
+	truthy(p.index["gosminha:dourada"])
+	eq(p.stats.conveyorBought, 1)
 end)
 
-test("[1b] ClientView é serializável (sem tabelas mistas)", function()
-	local p = fresh()
-	ProfileOps.openCases(p, ctx(), "urban", 5, {})
-	serialize(ClientView.build(p, NOW, "Tester"))
-end)
-
-test("[2] cada abertura entrega o prêmio sorteado", function()
-	local c = CaseDefinitions.ById.urban
-	local t = Probability.computeTable(c, ProfileOps.activeLuck(fresh(), NOW))
-	local rolls = { 0.01, 0.5, 0.9, 0.9999, 0.7 }
-	local p = fresh()
-	local ok, res = ProfileOps.openCases(p, ctx(NOW, seqRng(rolls)), "urban", 5, {})
-	truthy(ok)
-	for i, r in ipairs(res.results) do
-		eq(r.defId, Probability.pick(t, rolls[i]).skinId, "prêmio " .. i)
-		eq(p.inventory[r.uid].defId, r.defId, "item no inventário")
-	end
-end)
-
-test("[3] sem cobranças duplicadas", function()
-	local p = fresh()
-	local before = p.credits
-	ProfileOps.openCases(p, ctx(), "urban", 1, {})
-	eq(p.credits, before - 25)
-	ProfileOps.openCases(p, ctx(), "urban", 5, {})
-	eq(p.credits, before - 25 - 125)
-	eq(p.stats.casesOpened, 6)
-end)
-
-test("[4] abertura múltipla é atômica", function()
-	local p = fresh()
-	p.credits = 240 -- não paga 10 Urban (250)
-	local snapshot = serialize(p)
-	local ok, code = ProfileOps.openCases(p, ctx(), "urban", 10, {})
+test("sem moedas ou sem vaga: nada muda", function()
+	local p = newProfile()
+	local before = deepCopy(p)
+	local ok, code = ProfileOps.buyFromConveyor(p, ctx(), { speciesId = "dragosma", mutationId = "normal", price = 13500 })
 	eq(ok, false)
-	eq(code, "insufficient_credits")
-	eq(serialize(p), snapshot, "perfil não pode mudar em falha")
-	p.credits = 250
-	ok = ProfileOps.openCases(p, ctx(), "urban", 10, {})
-	truthy(ok)
-	eq(count(p.inventory), 10)
-	eq(p.credits, 0)
-	local ok2, code2 = ProfileOps.openCases(p, ctx(), "urban", 3, {})
+	eq(code, "insufficient_coins")
+	eq(p.coins, before.coins)
+	for _ = 1, 8 do
+		give(p, "gosminha")
+	end
+	p.coins = 1e6
+	local ok2, code2 = ProfileOps.hatchEgg(p, ctx(), "basico")
 	eq(ok2, false)
-	eq(code2, "invalid_quantity")
+	eq(code2, "base_full")
+	eq(p.coins, 1e6)
+	eq(count(p.creatures), 8)
 end)
 
-test("[4b] inventário cheio bloqueia sem perda", function()
-	local p = fresh()
-	p.credits = 100000
-	for _ = 1, EconomyConfig.InventoryCapacity - 3 do
-		giveItem(p, "urban_01")
-	end
-	local before = p.credits
-	local ok, code = ProfileOps.openCases(p, ctx(), "urban", 5, {})
-	eq(ok, false)
-	eq(code, "inventory_full")
-	eq(p.credits, before)
-end)
-
-test("[4c] caixas grátis e bloqueio por nível", function()
-	local p = fresh()
-	p.level = 3
-	p.freeCases.tactical = 1
-	local before = p.credits
-	local ok, res = ProfileOps.openCases(p, ctx(), "tactical", 1, { useFree = true })
-	truthy(ok and res.usedFree)
-	eq(p.credits, before)
-	eq(p.freeCases.tactical, nil)
-	local ok2, code2 = ProfileOps.openCases(p, ctx(), "infinity", 1, {})
-	eq(ok2, false)
-	eq(code2, "level_locked")
-end)
-
-test("[5] abertura automática pode ser interrompida e tem limites", function()
-	local s = AutoOpen.new()
-	s:start("urban", 1, 1000)
-	truthy(s:check("urban", 1, 1000))
-	s:record(1000)
-	local ok, why = s:check("urban", 1, 1000.5)
-	eq(ok, false)
-	eq(why, "auto_too_fast")
-	s:stop("user")
-	ok, why = s:check("urban", 1, 1010)
-	eq(ok, false)
-	eq(why, "auto_inactive")
-	s:start("urban", 1, 2000)
-	local t = 2000
-	for _ = 1, EconomyConfig.Opening.AutoMaxOpensPerSession do
-		t = t + 2
-		truthy(s:check("urban", 1, t))
-		s:record(t)
-	end
-	ok, why = s:check("urban", 1, t + 2)
-	eq(why, "auto_limit_opens")
-	eq(s.active, false)
-	s:start("urban", 1, 0)
-	ok, why = s:check("urban", 1, EconomyConfig.Opening.AutoMaxSessionSeconds + 1)
-	eq(why, "auto_limit_time")
-end)
-
-test("[6] venda não duplica créditos", function()
-	local p = fresh()
-	local uid = giveItem(p, "phantom_05") -- secreta
-	local value = SkinDefinitions.ById.phantom_05.value
-	local before = p.credits
-	local okV, codeV = ProfileOps.sellItems(p, ctx(), { uid }, false, false)
-	eq(codeV, "valuable_locked", "secreta exige confirmação")
-	eq(p.credits, before)
-	local ok = ProfileOps.sellItems(p, ctx(), { uid }, false, true)
+test("ovo: cobra o preço, entrega 1 criatura, ovo lendário exige renascimento", function()
+	local p = newProfile()
+	p.coins = 1e6
+	local ok, r = ProfileOps.hatchEgg(p, ctx(), "raro")
 	truthy(ok)
-	eq(p.credits, before + value)
-	local ok2, code2 = ProfileOps.sellItems(p, ctx(), { uid }, false, true)
+	eq(p.coins, 1e6 - 10000)
+	eq(count(p.creatures), 1)
+	truthy(GameConfig.SpeciesById[r.creature.s])
+	local ok2, code = ProfileOps.hatchEgg(p, ctx(), "lendario")
 	eq(ok2, false)
-	eq(code2, "invalid_item")
-	eq(p.credits, before + value)
-	-- lista com uid repetido é rejeitada inteira
-	local u2 = giveItem(p, "urban_01")
-	local ok3 = ProfileOps.sellItems(p, ctx(), { u2, u2 }, false)
-	eq(ok3, false)
-	truthy(p.inventory[u2])
+	eq(code, "egg_locked")
+	p.rebirths = 1
+	truthy((ProfileOps.hatchEgg(p, ctx(), "lendario")))
+	local bad = ProfileOps.hatchEgg(p, ctx(), "inexistente")
+	eq(bad, false)
 end)
 
-test("[6b] favoritos exigem confirmação explícita", function()
-	local p = fresh()
-	local uid = giveItem(p, "urban_01")
-	ProfileOps.setFavorite(p, ctx(), uid, true)
-	local ok, code = ProfileOps.sellItems(p, ctx(), { uid }, false)
-	eq(ok, false)
-	eq(code, "favorite_locked")
-	truthy(p.inventory[uid])
-	truthy(ProfileOps.sellItems(p, ctx(), { uid }, true))
+test("produção por horário, limite do cofre e relógio voltando", function()
+	local p = newProfile()
+	local c = give(p, "bolhudo") -- 2/s
+	near(Income.pending(p, c, T0 + 100), 200, 1e-6)
+	near(Income.pending(p, c, T0 + 10 * 3600), 2 * 1800, 1e-6, "cofre de 30 min")
+	eq(Income.pending(p, c, T0 - 500), 0, "relógio para trás não gera moedas")
+	p.rebirths = 2
+	near(Income.pending(p, c, T0 + 100), 400, 1e-6, "renascimentos multiplicam renda")
 end)
 
-test("[7] banco não duplica skins", function()
-	local p = fresh()
-	local uid = giveItem(p, "neon_05")
-	local n = count(p.inventory)
-	truthy(ProfileOps.deposit(p, ctx(), uid))
-	eq(count(p.inventory), n)
-	eq(p.inventory[uid].location, "bank")
-	local ok, code = ProfileOps.deposit(p, ctx(), uid)
-	eq(ok, false)
-	eq(code, "item_in_bank")
-	ok, code = ProfileOps.sellItems(p, ctx(), { uid }, true)
-	eq(code, "item_in_bank")
-	ok, code = ProfileOps.applyUpgrade(p, ctx(), uid, "finish")
-	eq(code, "item_in_bank")
-	truthy(ProfileOps.withdraw(p, ctx(), uid))
-	eq(p.inventory[uid].location, "inventory")
-	eq(count(p.inventory), n)
-	-- vagas
-	for _ = 1, BankConfig.BaseSlots do
-		truthy(ProfileOps.deposit(p, ctx(), giveItem(p, "urban_01")))
-	end
-	ok, code = ProfileOps.deposit(p, ctx(), uid)
-	eq(code, "bank_full")
-end)
-
-test("[8] renda calculada corretamente", function()
-	local p = fresh()
-	local def = SkinDefinitions.ById.elite_04
-	local uid = giveItem(p, def.id)
-	ProfileOps.deposit(p, ctx(NOW), uid)
-	local rate = BankMath.baseIncome(def) * BankMath.efficiency(p)
-	near(BankMath.totalRate(p), rate, 1e-12)
-	local expected = BankConfig.K * def.value ^ BankConfig.Exponent * RarityConfig.Rarities[def.rarity].bankMultiplier
-	near(rate, math.min(expected, BankConfig.MaxIncomePerSkin), 1e-12, "fórmula")
-	BankMath.settle(p, NOW + 100)
-	near(p.bank.pending, math.min(rate * 100, BankMath.storageCap(p)), 1e-9)
-	local before = p.credits
-	local ok, res = ProfileOps.claimBank(p, ctx(NOW + 100))
+test("coletar paga tudo de uma vez e zera os pedestais", function()
+	local p = newProfile()
+	give(p, "gosminha")
+	give(p, "bolhudo")
+	local ok, r = ProfileOps.collectAll(p, ctx(T0 + 60))
 	truthy(ok)
-	eq(p.credits, before + res.credits)
-	truthy(p.bank.pending < 1 and p.bank.pending >= 0, "sobra fracionária")
-	local ok2 = ProfileOps.claimBank(p, ctx(NOW + 100))
+	eq(r.coins, 180)
+	eq(p.coins, 300 + 180)
+	local ok2, code = ProfileOps.collectAll(p, ctx(T0 + 60))
 	eq(ok2, false)
+	eq(code, "nothing_to_collect")
 end)
 
-test("[8b] retornos decrescentes e teto por skin", function()
-	local cheap = BankMath.baseIncome({ value = 100, rarity = "Common" })
-	local rich = BankMath.baseIncome({ value = 10000, rarity = "Common" })
-	truthy(rich / 10000 < cheap / 100, "proporcionalmente menor")
-	eq(BankMath.baseIncome({ value = 1e12, rarity = "Secret" }), BankConfig.MaxIncomePerSkin)
-end)
-
-test("[9] banco respeita limite de produção offline e teto do cofre", function()
-	local p = fresh()
-	p.bank.upgrades.storage = 8
-	local uid = giveItem(p, "infinity_05")
-	ProfileOps.deposit(p, ctx(NOW), uid)
-	local rate = BankMath.totalRate(p)
-	BankMath.settle(p, NOW + 48 * 3600)
-	near(p.bank.pending, math.min(rate * BankConfig.MaxOfflineSeconds, BankMath.storageCap(p)), 1e-6)
-	local p2 = fresh()
-	ProfileOps.deposit(p2, ctx(NOW), giveItem(p2, "infinity_05"))
-	BankMath.settle(p2, NOW + 48 * 3600)
-	eq(p2.bank.pending, BankMath.storageCap(p2), "teto do cofre")
-	-- relógio voltando não gera créditos
-	local before = p2.bank.pending
-	BankMath.settle(p2, NOW)
-	eq(p2.bank.pending, before)
-end)
-
-test("[10] patrimônio não conta itens duas vezes", function()
-	local p = fresh()
-	p.credits = 1000
-	local a = giveItem(p, "neon_05")
-	local b = giveItem(p, "phantom_05")
-	local c = giveItem(p, "urban_01")
-	ProfileOps.equip(p, ctx(), a)
-	ProfileOps.deposit(p, ctx(), b)
-	local w = Wealth.compute(p)
-	local va = SkinDefinitions.ById.neon_05.value
-	local vb = SkinDefinitions.ById.phantom_05.value
-	local vc = SkinDefinitions.ById.urban_01.value
-	eq(w.netWorth, 1000 + va + vb + vc)
-	eq(w.equipValue, va)
-	eq(w.bankValue, vb)
-	BankMath.settle(p, NOW + 3600)
-	local w2 = Wealth.compute(p)
-	eq(w2.netWorth, w.netWorth + math.floor(p.bank.pending), "pendente entra uma vez")
-	local before = w2.netWorth
-	ProfileOps.claimBank(p, ctx(NOW + 3600))
-	local w3 = Wealth.compute(p)
-	truthy(math.abs(w3.netWorth - before) <= 0, "resgate não altera o patrimônio")
-end)
-
-test("[11] renascimento preserva o prometido", function()
-	local p = fresh()
-	p.level = 25
-	p.credits = 60000
-	local keepEpic = giveItem(p, "urban_05")
-	local keepRare = giveItem(p, "urban_04")
-	local keepFav = giveItem(p, "urban_01")
-	ProfileOps.setFavorite(p, ctx(), keepFav, true)
-	local lose = giveItem(p, "urban_02")
-	p.achievements.a_open1 = NOW
-	p.collectionsClaimed.urban = true
-	local ok, code = ProfileOps.rebirth(p, ctx(), "renascer")
-	eq(ok, false)
-	eq(code, "confirmation_required")
-	local preview = ProfileOps.rebirthPreview(p, NOW)
-	truthy(preview.canRebirth)
-	eq(preview.keepItems.count, 3)
-	eq(preview.loseItems.count, 1)
-	truthy(ProfileOps.rebirth(p, ctx(), "RENASCER"))
-	truthy(p.inventory[keepEpic] and p.inventory[keepFav] and p.inventory[keepRare], "raras preservadas")
-	eq(p.inventory[lose], nil)
-	truthy(p.discovered.urban_02, "índice preservado")
-	truthy(p.achievements.a_open1 and p.collectionsClaimed.urban)
-	eq(p.rebirths, 1)
-	truthy(p.level <= 2, "nível reiniciado (a conquista de renascimento concede XP)")
-	eq(p.credits, EconomyConfig.StartingCredits)
-	truthy(p.titles.renascido)
-	local ok2, code2 = ProfileOps.rebirth(p, ctx(), "RENASCER")
-	eq(code2, "rebirth_locked")
-end)
-
-test("[12] oficina não consome recursos sem entregar o resultado", function()
-	local p = fresh()
-	local uid = giveItem(p, "urban_04")
-	p.credits = 10000
-	local snapshot = serialize(p)
-	local ok, code = ProfileOps.applyUpgrade(p, ctx(), uid, "holo")
-	eq(code, "insufficient_materials")
-	eq(serialize(p), snapshot)
-	p.materials.scrap = 50
-	p.materials.pigment = 10
-	local quote = ProfileOps.upgradeQuote(p, uid, "holo")
-	local before = p.credits
-	ok = ProfileOps.applyUpgrade(p, ctx(), uid, "holo")
+test("renda offline: volta depois de 8 horas e recebe só o cofre", function()
+	local p = newProfile()
+	give(p, "espinhoso") -- 7/s
+	p.upgrades.storage = 2 -- 30 + 60 min
+	local ok, r = ProfileOps.collectAll(p, ctx(T0 + 8 * 3600))
 	truthy(ok)
-	truthy(p.inventory[uid].upgrades.holo, "resultado entregue")
-	eq(p.credits, before - quote.credits)
-	eq(p.materials.scrap, 40)
-	eq(p.materials.pigment, 7)
-	local ok2, code2 = ProfileOps.applyUpgrade(p, ctx(), uid, "holo")
-	eq(code2, "already_upgraded")
-	local ok3, code3 = ProfileOps.applyUpgrade(p, ctx(), giveItem(p, "urban_01"), "gold")
-	eq(code3, "rarity_too_low")
+	eq(r.coins, 7 * 5400)
 end)
 
-test("[13] missões não podem ser resgatadas repetidamente", function()
-	local p = fresh()
-	ProfileOps.refreshPeriods(p, NOW)
-	local id = p.missions.daily[1]
-	local def = MissionDefinitions.ById[id]
-	local ok, code = ProfileOps.claimMission(p, ctx(), id)
-	eq(code, "mission_incomplete")
-	p.missions.progress[id] = def.target
-	truthy(ProfileOps.claimMission(p, ctx(), id))
-	local snap = serialize(p)
-	ok, code = ProfileOps.claimMission(p, ctx(), id)
-	eq(code, "already_claimed")
-	eq(serialize(p), snap)
-	-- missão de outro dia não está ativa
-	local other
-	for _, m in ipairs(MissionDefinitions.Daily) do
-		local active = false
-		for _, a in ipairs(p.missions.daily) do
-			if a == m.id then
-				active = true
-			end
+test("poção de renda e evento Renda em Dobro contam só no período certo", function()
+	local p = newProfile()
+	local c = give(p, "gosminha") -- 1/s
+	p.potions.renda = 1
+	truthy((ProfileOps.activatePotion(p, ctx(T0 + 100), "renda")))
+	-- 100 s normais + 100 s com ×1,5
+	near(Income.pending(p, c, T0 + 200), 100 + 150, 1e-6)
+	-- evento de renda: procura a próxima janela e mede dentro dela
+	local p2 = newProfile()
+	local c2 = give(p2, "gosminha")
+	local w
+	local t = T0
+	while not w do
+		local e = EventConfig.at(t)
+		if e and e.kind == "income" then
+			w = e
 		end
-		if not active then
-			other = m.id
-		end
+		t = t + 60
 	end
-	ok, code = ProfileOps.claimMission(p, ctx(), other)
-	eq(code, "mission_inactive")
-	-- no dia seguinte as diárias reiniciam
-	ProfileOps.refreshPeriods(p, NOW + 86400)
-	eq(p.missions.claimed[id] ~= true or p.missions.daily[1] ~= id, true)
+	c2.since = w.startsAt
+	near(Income.pending(p2, c2, w.startsAt + 100), 200, 1e-6, "dobro durante o evento")
+	c2.since = w.endsAt
+	near(Income.pending(p2, c2, w.endsAt + 100), 100, 1e-6, "normal depois")
 end)
 
-test("[13b] progresso de missão por eventos", function()
-	local p = fresh()
-	ProfileOps.refreshPeriods(p, NOW)
-	p.missions.daily = { "d_open10", "d_sell3common", "d_deposit1" }
-	p.missions.progress = { d_open10 = 0, d_sell3common = 0, d_deposit1 = 0 }
-	p.credits = 1000
-	ProfileOps.openCases(p, ctx(), "urban", 10, {})
-	eq(p.missions.progress.d_open10, 10)
-	truthy(ProfileOps.claimMission(p, ctx(), "d_open10"))
-	eq(p.freeCases.urban, 1)
-end)
-
-test("[13c] presente diário e de nível sem resgate duplicado", function()
-	local p = fresh()
-	truthy(ProfileOps.claimDaily(p, ctx(NOW)))
-	local ok, code = ProfileOps.claimDaily(p, ctx(NOW + 60))
-	eq(code, "already_claimed")
-	truthy(ProfileOps.claimDaily(p, ctx(NOW + 86400)))
-	eq(p.rewards.dailyStreak, 2)
-	truthy(ProfileOps.claimDaily(p, ctx(NOW + 86400 * 3)))
-	eq(p.rewards.dailyStreak, 1, "sequência reinicia ao pular dia")
-	ok, code = ProfileOps.claimLevelReward(p, ctx(), 5)
-	eq(code, "level_locked")
-	p.level = 5
-	truthy(ProfileOps.claimLevelReward(p, ctx(), 5))
-	ok, code = ProfileOps.claimLevelReward(p, ctx(), 5)
-	eq(code, "already_claimed")
-	truthy(p.rewards.levelClaimed["5"])
-end)
-
-test("[13d] coleção e conquistas com resgate único", function()
-	local p = fresh()
-	for _, s in ipairs(SkinDefinitions.ByCase.urban) do
-		p.discovered[s.id] = NOW
-	end
-	ProfileOps.checkAchievements(p, NOW)
-	truthy(p.achievements.a_col1)
-	truthy(ProfileOps.claimCollection(p, ctx(), "urban"))
-	truthy(p.cosmetics.frame_urban and p.cosmetics.showcase_urban and p.cosmetics.variant_urban, "cosméticos da coleção")
-	truthy(p.titles.grafiteiro, "título da coleção")
-	local ok, code = ProfileOps.claimCollection(p, ctx(), "urban")
-	eq(code, "already_claimed")
-	ok, code = ProfileOps.claimCollection(p, ctx(), "tactical")
-	eq(code, "collection_incomplete")
-	truthy(ProfileOps.claimAchievement(p, ctx(), "a_col1"))
-	ok, code = ProfileOps.claimAchievement(p, ctx(), "a_col1")
-	eq(code, "already_claimed")
-	ok, code = ProfileOps.claimAchievement(p, ctx(), "a_col12")
-	eq(code, "achievement_locked")
-end)
-
-test("[14] rankings consistentes com o perfil", function()
-	local p = fresh()
-	p.credits = 500
-	local uid = giveItem(p, "phantom_05")
-	ProfileOps.deposit(p, ctx(NOW), uid)
-	BankMath.settle(p, NOW + 3600)
-	local s = LeaderboardStats.compute(p)
-	eq(s.netWorth, 500 + SkinDefinitions.ById.phantom_05.value + math.floor(p.bank.pending))
-	local before = s.netWorth
-	local ok, res = ProfileOps.claimBank(p, ctx(NOW + 3600))
+test("vender: 50% do valor + guardado; valiosa exige confirmação; carregada não vende", function()
+	local p = newProfile()
+	local c = give(p, "olhudo", "dourada") -- valor 7200
+	local ok, r = ProfileOps.sell(p, ctx(T0 + 10), c.uid)
 	truthy(ok)
-	eq(LeaderboardStats.compute(p).netWorth, before, "renda contada uma única vez")
-	truthy(s.bankIncome > 0, "ranking de renda")
-	eq(s.unique, 1)
+	eq(r.coins, 3600)
+	eq(r.collected, 1100)
+	eq(p.coins, 300 + 3600 + 1100)
+	local leg = give(p, "rei_gosma")
+	local okL, codeL = ProfileOps.sell(p, ctx(), leg.uid)
+	eq(okL, false)
+	eq(codeL, "valuable_locked")
+	local okC, codeC = ProfileOps.sell(p, ctx(T0, { [leg.uid] = true }), leg.uid, true)
+	eq(okC, false)
+	eq(codeC, "being_stolen")
+	truthy((ProfileOps.sell(p, ctx(), leg.uid, true)))
+	eq(count(p.creatures), 0)
 end)
 
-test("[16] PvP, monstros e combate bloqueados", function()
-	for _, k in ipairs({ "PvP", "MonsterCombat", "Bosses", "Shooting", "DamageAndCombat", "SkinCrashGambling", "PlayerTrading", "PaidRandomItems" }) do
-		eq(FeatureFlags[k], false, k)
+test("melhorias: custo crescente, efeito e nível máximo", function()
+	local p = newProfile()
+	p.coins = 1e12
+	local c1 = GameConfig.upgradeCost("slots", 0)
+	truthy((ProfileOps.buyUpgrade(p, ctx(), "slots")))
+	eq(ProfileSchema.slots(p), 10)
+	truthy(GameConfig.upgradeCost("slots", 1) > c1)
+	for _ = 2, GameConfig.Upgrades.slots.maxLevel do
+		truthy((ProfileOps.buyUpgrade(p, ctx(), "slots")))
 	end
-end)
-
-print("== Integridade, XP e utilitários ==")
-
-test("integridade corrige perfil corrompido", function()
-	local p = fresh()
-	p.credits = -50
-	p.inventory.i7 = { uid = "i7", defId = "nao_existe", location = "inventory" }
-	p.inventory.i3 = { uid = "i3", defId = "urban_01", location = "foguete", upgrades = {} }
-	p.nextUid = 10
-	p.bank.lastTick = NOW + 99999
-	for _ = 1, 6 do
-		local uid = giveItem(p, "urban_01")
-		p.inventory[uid].location = "bank"
-	end
-	p.nextUid = 1
-	local issues = ProfileSchema.validate(p, NOW)
-	truthy(#issues >= 4)
-	eq(p.credits, 0)
-	eq(p.inventory.i7, nil)
-	eq(p.inventory.i3.location, "inventory")
-	truthy(p.nextUid > 15)
-	local inBank = 0
-	for _, it in pairs(p.inventory) do
-		if it.location == "bank" then
-			inBank = inBank + 1
-		end
-	end
-	eq(inBank, BankMath.slots(p))
-	eq(p.bank.lastTick, NOW)
-end)
-
-test("XP repetitivo tem limite diário", function()
-	local p = fresh()
-	p.credits = 1e6
-	p.level = 50
-	local Progression = shared_module("Logic/Progression")
-	local total = 0
-	for _ = 1, 500 do
-		total = total + Progression.addXp(p, 2, "open", NOW)
-	end
-	eq(total, ProgressionConfig.DailyXpCaps.open)
-	truthy(Progression.addXp(p, 2, "open", NOW + 86400) == 2, "reinicia no dia seguinte")
-end)
-
-test("curva de XP gradual", function()
-	local prev = 0
-	for l = 1, 99 do
-		local x = ProgressionConfig.xpForLevel(l)
-		truthy(x > prev)
-		prev = x
-	end
-end)
-
-test("melhorias do banco: custo progressivo e limite", function()
-	local p = fresh()
-	p.credits = 1e9
-	p.level = 100
-	local last = 0
-	for i = 1, BankConfig.Upgrades.slots.maxLevel do
-		local ok, res = ProfileOps.buyBankUpgrade(p, ctx(), "slots")
-		truthy(ok)
-		truthy(res.cost > last)
-		last = res.cost
-	end
-	local ok, code = ProfileOps.buyBankUpgrade(p, ctx(), "slots")
+	eq(ProfileSchema.slots(p), 20)
+	local ok, code = ProfileOps.buyUpgrade(p, ctx(), "slots")
+	eq(ok, false)
 	eq(code, "max_level")
-	eq(BankMath.slots(p), BankConfig.BaseSlots + BankConfig.Upgrades.slots.maxLevel)
+	truthy((ProfileOps.buyUpgrade(p, ctx(), "shield")))
+	eq(ProfileOps.shieldSeconds(p), 70)
+	truthy((ProfileOps.buyUpgrade(p, ctx(), "speed")))
+	eq(ProfileOps.walkSpeed(p, T0, false), 17)
+	eq(ProfileOps.walkSpeed(p, T0, true), 13)
 end)
 
-test("equipamentos respeitam vagas", function()
-	local p = fresh()
-	for i = 1, EconomyConfig.BaseEquipSlots do
-		truthy(ProfileOps.equip(p, ctx(), giveItem(p, "urban_01")))
+test("cofre maior não apaga nem duplica a produção guardada", function()
+	local p = newProfile()
+	p.coins = 1e9
+	local c = give(p, "gosminha")
+	local before = Income.pending(p, c, T0 + 5000) -- cheio: 1800
+	near(before, 1800, 1e-6)
+	truthy((ProfileOps.buyUpgrade(p, ctx(T0 + 5000), "storage")))
+	near(Income.pending(p, c, T0 + 5000), 1800, 1e-6)
+	near(Income.pending(p, c, T0 + 5100), 1900, 1e-6)
+end)
+
+test("poções: comprar com moedas, ativar, acumular até o máximo", function()
+	local p = newProfile()
+	p.coins = 1e6
+	truthy((ProfileOps.buyPotion(p, ctx(), "sorte")))
+	eq(p.potions.sorte, 1)
+	eq(p.coins, 1e6 - 20000)
+	truthy((ProfileOps.activatePotion(p, ctx(), "sorte")))
+	local luck = ProfileOps.luck(p, T0 + 10)
+	near(luck, 0.25, 1e-9)
+	p.potions.sorte = 10
+	for _ = 1, 5 do
+		ProfileOps.activatePotion(p, ctx(), "sorte")
 	end
-	local ok, code = ProfileOps.equip(p, ctx(), giveItem(p, "urban_02"))
-	eq(code, "equip_full")
-end)
-
-test("sorte temporária expira e a de usos é consumida", function()
-	local p = fresh()
-	ProfileOps.grantLuck(p, "luck_daily", NOW)
-	ProfileOps.grantLuck(p, "luck_mission", NOW)
-	local total = ProfileOps.activeLuck(p, NOW)
-	truthy(total >= 0.13 - 1e-9, "sorte somada " .. total)
-	p.credits = 10000
-	ProfileOps.openCases(p, ctx(NOW), "urban", 10, {})
-	ProfileOps.openCases(p, ctx(NOW), "urban", 10, {})
-	ProfileOps.openCases(p, ctx(NOW), "urban", 10, {})
-	local _, list = ProfileOps.activeLuck(p, NOW + 3600)
-	for _, e in ipairs(list) do
-		truthy(e.id ~= "luck_daily" and e.id ~= "luck_mission", "expirou: " .. e.id)
-	end
-end)
-
-test("missões determinísticas por dia", function()
-	local a = MissionDefinitions.dailyFor(20000)
-	local b = MissionDefinitions.dailyFor(20000)
-	eq(table.concat(a, ","), table.concat(b, ","))
-	eq(#a, MissionDefinitions.DailyCount)
-	local w = MissionDefinitions.weeklyFor(2900)
-	eq(#w, MissionDefinitions.WeeklyCount)
-end)
-
-test("formatação", function()
-	eq(Format.int(1234567), "1.234.567")
-	eq(Format.short(1500), "1,5 mil")
-	eq(Format.short(2000000), "2 mi")
-	eq(Format.percent(0.12345, 2), "12,35%")
-	eq(TimeUtil.weekIndex(345600), 0)
-end)
-
-test("preço da oficina é determinístico", function()
-	local r = UpgradeRecipes.ById.finish
-	eq(UpgradeRecipes.creditCost(r, 100), 55)
-end)
-
-print("== Novidades V4 ==")
-
-local AttributeConfig = shared_module("Config/AttributeConfig")
-
-test("×25 exige o atributo Limite de abertura múltipla", function()
-	local p = fresh()
-	p.credits = 100000
-	local ok, code = ProfileOps.openCases(p, ctx(), "starter", 25, {})
-	eq(code, "quantity_locked")
-	eq(p.credits, 100000)
-	p.level = 15
-	truthy(ProfileOps.buyAttribute(p, ctx(), "multiOpen"))
-	local ok2, res = ProfileOps.openCases(p, ctx(), "starter", 25, {})
-	truthy(ok2, tostring(res))
-	eq(#res.results, 25)
-end)
-
-test("atributos: limite máximo, requisito e custo progressivo", function()
-	local p = fresh()
-	p.credits = 1e9
-	local ok, code = ProfileOps.buyAttribute(p, ctx(), "luck")
-	eq(code, "level_locked")
-	p.level = 100
-	local last = 0
-	for _ = 1, AttributeConfig.Attributes.luck.maxLevel do
-		local okB, res = ProfileOps.buyAttribute(p, ctx(), "luck")
-		truthy(okB)
-		truthy(res.cost > last)
-		last = res.cost
-	end
-	ok, code = ProfileOps.buyAttribute(p, ctx(), "luck")
-	eq(code, "max_level")
-	local total = ProfileOps.activeLuck(p, NOW)
-	truthy(total >= 0.10 - 1e-9, "sorte do atributo aplicada")
-	local info = ProfileOps.attributeInfo(p, "luck")
-	eq(info.level, info.maxLevel)
-	eq(info.nextBenefit, nil)
-end)
-
-test("atributos vinculados alteram a mesma melhoria do banco", function()
-	local p = fresh()
-	p.credits = 1e9
-	p.level = 100
-	truthy(ProfileOps.buyAttribute(p, ctx(), "bankCapacity"))
-	eq(p.bank.upgrades.slots, 1)
-	eq(ProfileOps.attributeLevel(p, "bankCapacity"), 1)
-	truthy(ProfileOps.buyBankUpgrade(p, ctx(), "efficiency"))
-	eq(ProfileOps.attributeLevel(p, "bankEfficiency"), 1)
-end)
-
-test("bônus de XP e títulos por nível", function()
-	local p = fresh()
-	p.attributes.xpBonus = 10
-	local Progression = shared_module("Logic/Progression")
-	local got = Progression.addXp(p, 100, nil, NOW)
-	eq(got, 150)
-	local p2 = fresh()
-	ProfileOps._giveXp(p2, 60000, nil, NOW)
-	truthy(p2.level >= 15)
-	truthy(p2.titles.colecionador and p2.titles.especialista, "títulos de nível")
-end)
-
-test("conquistas concedem XP", function()
-	local p = fresh()
-	p.stats.casesOpened = 1
-	ProfileOps.checkAchievements(p, NOW)
-	truthy(p.achievements.a_open1)
-	truthy(p.xp > 0 or p.level > 1)
-end)
-
-test("limite offline aumenta com a melhoria", function()
-	local p = fresh()
-	p.bank.upgrades.storage = 8
-	ProfileOps.deposit(p, ctx(NOW), giveItem(p, "elite_04"))
-	local base = BankMath.offlineCap(p)
-	p.bank.upgrades.offline = 2
-	eq(BankMath.offlineCap(p), base + 4 * 3600)
-	local rate = BankMath.totalRate(p)
-	local t = NOW + 100 * 3600
-	BankMath.settle(p, t)
-	local cap = base + 4 * 3600
-	near(p.bank.pending, math.min(rate * BankMath.boostedSeconds(p, t - cap, t), BankMath.storageCap(p)), 1e-6)
-end)
-
-test("showroom: limite de vagas e depósito remove a exposição", function()
-	local p = fresh()
-	local uids = {}
-	for i = 1, EconomyConfig.ShowcaseSlots do
-		uids[i] = giveItem(p, "urban_01")
-		truthy(ProfileOps.setShowcase(p, ctx(), uids[i], true))
-	end
-	local ok, code = ProfileOps.setShowcase(p, ctx(), giveItem(p, "urban_02"), true)
-	eq(code, "showcase_full")
-	truthy(ProfileOps.deposit(p, ctx(), uids[1]))
-	eq(p.inventory[uids[1]].showcase, nil)
-	eq(ProfileOps.showcaseCount(p), EconomyConfig.ShowcaseSlots - 1)
-end)
-
-test("variante exclusiva da coleção exige coleção resgatada", function()
-	local p = fresh()
-	local uid = giveItem(p, "starter_01")
-	local ok, code = ProfileOps.applyCollectionVariant(p, ctx(), uid)
-	eq(code, "cosmetic_locked")
-	for _, s in ipairs(SkinDefinitions.ByCase.starter) do
-		p.discovered[s.id] = NOW
-	end
-	truthy(ProfileOps.claimCollection(p, ctx(), "starter"))
-	truthy(ProfileOps.applyCollectionVariant(p, ctx(), uid))
-	truthy(p.inventory[uid].upgrades.colVariant)
-end)
-
-test("caixas de níveis altos bloqueadas e liberadas pelo nível", function()
-	local p = fresh()
-	p.credits = 1e7
-	local ok, code = ProfileOps.openCases(p, ctx(), "royal", 1, {})
-	eq(code, "level_locked")
-	p.level = 40
-	truthy(ProfileOps.openCases(p, ctx(), "royal", 1, {}))
-end)
-
-test("evolução não trava sem créditos: caixa Starter acessível e presente diário", function()
-	local p = fresh()
-	p.credits = 0
-	truthy(ProfileOps.claimDaily(p, ctx()))
-	truthy(p.credits >= CaseDefinitions.ById.starter.price)
-end)
-
-print("== Zonas, poções, eventos 2X e loja em seções ==")
-
-local ZoneConfig = shared_module("Config/ZoneConfig")
-local PotionConfig = shared_module("Config/PotionConfig")
-local EventDefinitions = shared_module("Config/EventDefinitions")
-
-test("zonas: compra em ordem, nível e custo; sorte só dentro e desbloqueada", function()
-	local p = fresh()
-	p.credits = 1e6
-	local ok, code = ProfileOps.buyZone(p, ctx(), "zone3")
-	eq(code, "zone_requires")
-	ok, code = ProfileOps.buyZone(p, ctx(), "zone2")
-	eq(code, "level_locked")
-	p.level = 30
-	truthy(ProfileOps.buyZone(p, ctx(), "zone2"))
-	ok, code = ProfileOps.buyZone(p, ctx(), "zone2")
-	eq(code, "zone_owned")
-	local quiet = 1794200000 -- fora de eventos e de relâmpago de sorte
-	while EventDefinitions.flashAt(quiet) do
-		quiet = quiet + 1800
-	end
-	local outside = ProfileOps.activeLuck(p, quiet, "zone1")
-	local inside = ProfileOps.activeLuck(p, quiet, "zone2")
-	near(inside - outside, 0.05, 1e-9)
-	local lockedZone = ProfileOps.activeLuck(p, quiet, "zone3")
-	near(lockedZone, outside, 1e-9, "zona bloqueada não dá sorte")
-	eq(ZoneConfig.zoneAt(235, 0), "zone2")
-	eq(ZoneConfig.zoneAt(0, 0), "zone1")
-end)
-
-test("poções: ativação acumula até o limite e consome do estoque", function()
-	local p = fresh()
-	local ok, code = ProfileOps.activatePotion(p, ctx(), "luck")
-	eq(code, "no_potion")
-	p.potions.luck = 10
-	local def = PotionConfig.Potions.luck
-	for _ = 1, def.maxStack / def.duration do
-		truthy(ProfileOps.activatePotion(p, ctx(), "luck"))
-	end
-	ok, code = ProfileOps.activatePotion(p, ctx(), "luck")
+	eq(p.activePotions.sorte, T0 + 3600, "limite de 1 hora acumulada")
+	local ok, code = ProfileOps.activatePotion(p, ctx(), "sorte")
+	eq(ok, false)
 	eq(code, "potion_max")
-	eq(p.activePotions.luck, NOW + def.maxStack)
-	eq(p.potions.luck, 10 - def.maxStack / def.duration)
+	local ok2, code2 = ProfileOps.activatePotion(p, ctx(), "velocidade")
+	eq(code2, "no_potion")
 end)
 
-test("poção de XP dobra o XP; de renda soma 50% só enquanto ativa", function()
-	local Progression = shared_module("Logic/Progression")
-	local p = fresh()
-	local quiet = 1794200000
-	while EventDefinitions.flashAt(quiet) do
-		quiet = quiet + 1800
-	end
-	p.activePotions.xp = quiet + 600
-	eq(Progression.xpMultiplier(p, quiet), 2)
-	eq(Progression.xpMultiplier(p, quiet + 601), 1)
-	p.activePotions.income = quiet + 100
-	local secs = BankMath.boostedSeconds(p, quiet, quiet + 200)
-	local flashExtra = 0
-	for _, w in ipairs(EventDefinitions.flashWindows(quiet, quiet + 200, "income")) do
-		flashExtra = flashExtra + 1
-	end
-	eq(flashExtra, 0)
-	near(secs, 200 + 100 * 0.5, 1e-9)
+test("roubo: entrega move a criatura, vítima recebe o que estava guardado", function()
+	local victim, thief = newProfile(), newProfile()
+	local c = give(victim, "dragosma", "diamante")
+	local okCan = ProfileOps.canSteal(victim, thief, c.uid, T0 + 30)
+	truthy(okCan)
+	local ok, r = ProfileOps.completeSteal(victim, thief, c.uid, T0 + 30)
+	truthy(ok)
+	eq(count(victim.creatures), 0)
+	eq(count(thief.creatures), 1)
+	eq(r.creature.s, "dragosma")
+	eq(r.creature.m, "diamante")
+	eq(victim.coins, 300 + 150 * 4 * 30, "vítima recebe a produção guardada")
+	eq(r.creature.since, T0 + 30, "ladrão começa do zero")
+	eq(thief.stats.stolen, 1)
+	eq(victim.stats.lostToThieves, 1)
+	truthy(thief.index["dragosma:diamante"])
 end)
 
-test("eventos relâmpago: agenda real, alternância e duração", function()
-	local F = EventDefinitions.Flash
-	local t0 = 1794182400 -- múltiplo do período
-	t0 = t0 - (t0 % F.period)
-	local a = EventDefinitions.flashAt(t0 + 60)
-	truthy(a and a.endsAt - a.startsAt == F.duration)
-	eq(EventDefinitions.flashAt(t0 + F.duration + 1), nil)
-	local nxt = EventDefinitions.nextFlash(t0 + F.duration + 1)
-	eq(nxt.startsAt, t0 + F.period)
-	truthy(nxt.kind ~= a.kind, "tipos alternam")
-	-- 2X sorte dobra o total (com teto)
-	local p = fresh()
-	p.attributes.luck = 5
-	local luckSlot
-	local t = t0
-	for _ = 1, 3 do
-		local f = EventDefinitions.flashAt(t + 60)
-		if f.kind == "luck" then
-			luckSlot = t + 60
+test("roubo: protegida por 3 min, base cheia ou criatura inexistente bloqueiam sem alterar", function()
+	local a, b = newProfile(), newProfile()
+	local c = give(a, "gosminha")
+	truthy((ProfileOps.completeSteal(a, b, c.uid, T0)))
+	local stolen
+	for _, x in pairs(b.creatures) do
+		stolen = x
+	end
+	local snapA, snapB = deepCopy(a), deepCopy(b)
+	local ok, code = ProfileOps.completeSteal(b, a, stolen.uid, T0 + 60)
+	eq(ok, false)
+	eq(code, "protected")
+	truthy((ProfileOps.canSteal(b, a, stolen.uid, T0 + 181)), "depois de 3 min pode")
+	for _ = 1, 8 do
+		give(a, "gosminha")
+	end
+	local ok2, code2 = ProfileOps.completeSteal(b, a, stolen.uid, T0 + 400)
+	eq(code2, "base_full")
+	eq(count(b.creatures), 1)
+	local ok3, code3 = ProfileOps.completeSteal(b, a, "c999", T0 + 400)
+	eq(code3, "invalid_creature")
+	eq(snapB.coins, b.coins)
+end)
+
+test("missões: progresso pelos eventos, resgate único e recompensa escala com a renda", function()
+	local p = newProfile()
+	local id = p.missions.list[1]
+	local def = ProgressConfig.MissionById[id]
+	local ok0, code0 = ProfileOps.claimMission(p, ctx(), id)
+	eq(code0, "not_ready")
+	ProfileOps.emit(p, T0, def.event, def.target)
+	for _ = 1, 4 do
+		give(p, "olhudo") -- 55/s cada
+	end
+	local coins = p.coins
+	local ok, r = ProfileOps.claimMission(p, ctx(), id)
+	truthy(ok)
+	local expected = math.max(def.reward.coins, math.floor(220 * 60 * def.reward.incomeMinutes))
+	eq(p.coins - coins, expected)
+	local ok2, code2 = ProfileOps.claimMission(p, ctx(), id)
+	eq(code2, "already_claimed")
+	local ok3, code3 = ProfileOps.claimMission(p, ctx(), "m_inexistente")
+	eq(code3, "invalid_mission")
+end)
+
+test("missões mudam por dia e são iguais para todos", function()
+	local d = TimeUtil.dayIndex(T0)
+	local a = ProfileOps.pickMissions(d)
+	local b = ProfileOps.pickMissions(d)
+	eq(table.concat(a, ","), table.concat(b, ","))
+	local p = newProfile()
+	ProfileOps.emit(p, T0, "hatch", 1)
+	ProfileOps.refreshPeriods(p, T0 + 86400)
+	eq(p.missions.day, d + 1)
+	eq(count(p.missions.progress), 0, "progresso zera no dia seguinte")
+end)
+
+test("presente diário: um por dia, sequência e recomeço", function()
+	local p = newProfile()
+	truthy((ProfileOps.claimGift(p, ctx())))
+	eq(p.gifts.streak, 1)
+	local ok, code = ProfileOps.claimGift(p, ctx(T0 + 60))
+	eq(code, "already_claimed")
+	truthy((ProfileOps.claimGift(p, ctx(T0 + 86400))))
+	eq(p.gifts.streak, 2)
+	eq(p.potions.velocidade, 1)
+	truthy((ProfileOps.claimGift(p, ctx(T0 + 86400 * 4))))
+	eq(p.gifts.streak, 1, "perdeu dias: recomeça")
+end)
+
+test("marcos do índice: só com combinações suficientes e uma vez", function()
+	local p = newProfile()
+	local ok, code = ProfileOps.claimMilestone(p, ctx(), "idx5")
+	eq(code, "not_ready")
+	for _, m in ipairs({ "normal", "dourada", "diamante", "radioativa", "vazio" }) do
+		give(p, "gosminha", m)
+	end
+	eq(ProfileOps.indexCount(p), 5)
+	truthy((ProfileOps.claimMilestone(p, ctx(), "idx5")))
+	eq(p.potions.sorte, 1)
+	local ok2, code2 = ProfileOps.claimMilestone(p, ctx(), "idx5")
+	eq(code2, "already_claimed")
+end)
+
+test("renascer: confirmação, custo, reinicia moedas/criaturas e mantém índice e melhorias", function()
+	local p = newProfile()
+	give(p, "rei_gosma")
+	p.upgrades.slots = 2
+	local cost = GameConfig.rebirthCost(1)
+	p.coins = cost - 1
+	local _, code = ProfileOps.rebirth(p, ctx(), "RENASCER")
+	eq(code, "rebirth_locked")
+	p.coins = cost
+	local _, code2 = ProfileOps.rebirth(p, ctx(), "renascer")
+	eq(code2, "confirmation_required")
+	local _, code3 = ProfileOps.rebirth(p, ctx(T0, { c1 = true }), "RENASCER")
+	eq(code3, "being_stolen")
+	truthy((ProfileOps.rebirth(p, ctx(), "RENASCER")))
+	eq(p.rebirths, 1)
+	eq(p.coins, 300)
+	eq(count(p.creatures), 0)
+	truthy(p.index["rei_gosma:normal"])
+	eq(p.upgrades.slots, 2)
+	near(Income.multiplier(p), 1.5, 1e-9)
+	near((ProfileOps.luck(p, T0)), 0.05, 1e-9)
+end)
+
+test("perfil corrompido é reparado (moedas, pedestais duplicados, criaturas inválidas)", function()
+	local p = newProfile()
+	give(p, "gosminha")
+	give(p, "bolhudo")
+	p.creatures.c2.pad = 1 -- pedestal duplicado
+	p.creatures.zz = { s = "nao_existe", m = "normal", pad = 3 }
+	p.coins = -50
+	p.upgrades.slots = 99
+	p.potions.sorte = "x"
+	local issues = ProfileSchema.validate(p, T0)
+	truthy(#issues >= 4)
+	eq(p.coins, 0)
+	eq(p.upgrades.slots, GameConfig.Upgrades.slots.maxLevel)
+	eq(p.creatures.zz, nil)
+	truthy(p.creatures.c1.pad ~= p.creatures.c2.pad)
+	eq(p.potions.sorte, 0)
+	local old = { coins = 10 }
+	ProfileSchema.migrate(old, T0)
+	truthy(type(old.creatures) == "table" and type(old.upgrades) == "table" and old.coins == 10)
+end)
+
+test("agenda de eventos é fixa, 6 min a cada 30 min, e alterna tipos", function()
+	local start = math.floor(T0 / EventConfig.Period) * EventConfig.Period
+	local e = EventConfig.at(start + 10)
+	truthy(e and e.endsAt == start + 360)
+	eq(EventConfig.at(start + 400), nil)
+	local n = EventConfig.nextEvent(start + 400)
+	eq(n.startsAt, start + 1800)
+	truthy(n.id ~= e.id)
+end)
+
+test("esteira: preço = preço da espécie × mutação", function()
+	local o = ProfileOps.rollConveyor(T0, 0.0001, 0.0001)
+	eq(o.speciesId, "gosminha")
+	eq(o.mutationId, "normal")
+	eq(o.price, 25)
+	local o2 = ProfileOps.rollConveyor(T0, 0.9999999, 0.9999999)
+	eq(o2.mutationId, "arcoiris")
+	eq(o2.price, GameConfig.SpeciesById[o2.speciesId].price * 20)
+end)
+
+test("mapa: 6 bases, 20 pedestais dentro da base, sem sobreposição", function()
+	eq(#MapConfig.Bases, 6)
+	for b = 1, 6 do
+		local seen = {}
+		for i = 1, 20 do
+			local x, z = MapConfig.padPosition(b, i)
+			eq(MapConfig.baseAt(x, z), b, "pedestal " .. i .. " da base " .. b)
+			local key = x .. "," .. z
+			truthy(not seen[key])
+			seen[key] = true
 		end
-		t = t + F.period
+		local sx, sz = MapConfig.toWorld(b, MapConfig.Terminal.spawn.lx, MapConfig.Terminal.spawn.lz)
+		truthy(MapConfig.inDelivery(b, sx, sz))
 	end
-	local base = ProfileOps.activeLuck(p, luckSlot + F.duration + 10)
-	local doubled = ProfileOps.activeLuck(p, luckSlot)
-	truthy(doubled > base, "2X sorte aplicado")
+	eq(MapConfig.baseAt(0, 0), nil, "praça não é base")
 end)
 
-test("loja em seções: especiais com preço pelo valor esperado e estoque diário", function()
-	local sections = {}
-	for _, c in ipairs(CaseDefinitions.List) do
-		sections[c.section] = (sections[c.section] or 0) + 1
-	end
-	eq(sections.level, 12)
-	truthy(sections.special >= 2 and sections.limited >= 2)
-	for _, c in ipairs(CaseDefinitions.List) do
-		local ev = Probability.expectedValue(Probability.computeTable(c, 0), SkinDefinitions)
-		local ratio = ev / c.price
-		truthy(ratio > 0.85 and ratio < 0.95, c.id .. " EV/preço = " .. ratio)
-	end
-	local knives = CaseDefinitions.ById.knives
-	for _, d in ipairs(knives.drops) do
-		eq(SkinDefinitions.ById[d.skinId].category, "Knife")
-	end
-	local p = fresh()
-	p.level = 30
-	p.credits = 1e8
-	local lucky = CaseDefinitions.ById.lucky
-	for _ = 1, lucky.stockPerDay do
-		truthy(ProfileOps.openCases(p, ctx(), "lucky", 1, {}))
-	end
-	local before = p.credits
-	local ok, code = ProfileOps.openCases(p, ctx(), "lucky", 1, {})
-	eq(code, "out_of_stock")
-	eq(p.credits, before)
-	truthy(ProfileOps.openCases(p, ctx(NOW + 86400), "lucky", 1, {}), "estoque renova no dia seguinte")
-end)
-
-test("recompensas com poções", function()
-	local p = fresh()
-	ProfileOps.grantReward(p, NOW, { potions = { luck = 2, income = 1 } }, nil)
-	eq(p.potions.luck, 2)
-	eq(p.potions.income, 1)
+test("fotografia do cliente traz tudo e patrimônio sem dupla contagem", function()
+	local p = newProfile()
+	give(p, "olhudo")
+	local v = ClientView.build(p, T0 + 10, { name = "Ana", baseIndex = 2, shieldUntil = T0 + 50 })
+	eq(#v.creatures, 1)
+	eq(v.netWorth, 300 + 3600)
+	near(v.pending, 550, 1e-6)
+	eq(v.slots, 8)
+	eq(#v.upgrades, 4)
+	eq(#v.missions, 3)
+	eq(v.indexTotal, 96)
+	eq(v.baseIndex, 2)
+	ProfileOps.collectAll(p, ctx(T0 + 10))
+	eq(Income.netWorth(p), 300 + 550 + 3600, "coletar não muda o patrimônio além do que entrou")
 end)
 
 print(string.format("\n%d passaram, %d falharam", passed, failed))
