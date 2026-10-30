@@ -8,6 +8,8 @@ Harness de testes fora do Roblox.
    e executa tests/spec.lua, que cobre os testes obrigatórios de lógica.
 
 Uso:  pip install lupa  &&  python3 tests/harness.py
+
+MYSTERY MACHINE: testes de lógica (spec.lua) e servidor + cliente simulados (server_smoke.lua).
 """
 import os
 import sys
@@ -60,6 +62,10 @@ def main():
     math.round = math.round or function(x) return math.floor(x + 0.5) end
     table.find = table.find or function(t, v) for i, x in ipairs(t) do if x == v then return i end end end
     table.clone = table.clone or function(t) local o = {} for k, v in pairs(t) do o[k] = v end return o end
+    -- tipos do Roblox usados pelas configs compartilhadas (substituídos pelo mock no teste de servidor)
+    Color3 = Color3 or { fromRGB = function(r, g, b) return { R = r / 255, G = g / 255, B = b / 255 } end }
+    __clock = 1793000000
+    DateTime = DateTime or { now = function() return { UnixTimestamp = __clock } end }
 
     local cache = {}
     local function proxy(path)

@@ -1,61 +1,61 @@
 name: Publicar no Roblox
 
-# Publicação GitHub -> Roblox exclusiva do MUTANT FACTORY (independente de outros jogos).
-# Só roda manualmente (Actions -> Publicar no Roblox -> Run workflow) e só depois de os testes passarem.
+# Publicação GitHub -> Roblox exclusiva do MYSTERY MACHINE, independente de outros jogos:
+# usa segredos com nomes próprios e um environment próprio. Só roda manualmente
+# (Actions -> Publicar no Roblox -> Run workflow, digitando PUBLICAR) e só depois dos testes.
 #
-# Configure em Settings -> Secrets and variables -> Actions deste repositório:
-#   ROBLOX_API_KEY      chave Open Cloud com permissão "universe-places" (Write) para ESTE jogo
-#   ROBLOX_UNIVERSE_ID  ID do universo (experiência) do MUTANT FACTORY
-#   ROBLOX_PLACE_ID     ID do place a publicar
+# Configure em Settings -> Secrets and variables -> Actions (ou no environment mystery-machine-production):
+#   MYSTERY_MACHINE_API_KEY      chave Open Cloud com permissão de escrita em places SÓ desta experiência
+#   MYSTERY_MACHINE_UNIVERSE_ID  ID do universo (experiência) do MYSTERY MACHINE
+#   MYSTERY_MACHINE_PLACE_ID     ID do place a publicar
 #
-# Usa a API oficial de publicação de places do Open Cloud:
-#   POST https://apis.roblox.com/universes/v1/{universeId}/places/{placeId}/versions?versionType=Published
+# API oficial: POST https://apis.roblox.com/universes/v1/{universeId}/places/{placeId}/versions?versionType=Published
 
 on:
   workflow_dispatch:
     inputs:
       confirm:
-        description: 'Digite PUBLICAR para publicar a versão atual'
+        description: "Digite PUBLICAR para publicar a versão atual"
         required: true
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     if: ${{ github.event.inputs.confirm == 'PUBLICAR' }}
-    environment: roblox-production
+    environment: mystery-machine-production
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Testes antes de publicar
+      - name: Testes
         run: |
           pip install lupa
           python3 tests/harness.py
           python3 tests/check_requires.py
-      - name: Verificar segredos
+      - name: Conferir segredos
         env:
-          ROBLOX_API_KEY: ${{ secrets.ROBLOX_API_KEY }}
-          ROBLOX_UNIVERSE_ID: ${{ secrets.ROBLOX_UNIVERSE_ID }}
-          ROBLOX_PLACE_ID: ${{ secrets.ROBLOX_PLACE_ID }}
+          KEY: ${{ secrets.MYSTERY_MACHINE_API_KEY }}
+          UNIVERSE: ${{ secrets.MYSTERY_MACHINE_UNIVERSE_ID }}
+          PLACE: ${{ secrets.MYSTERY_MACHINE_PLACE_ID }}
         run: |
-          if [ -z "$ROBLOX_API_KEY" ] || [ -z "$ROBLOX_UNIVERSE_ID" ] || [ -z "$ROBLOX_PLACE_ID" ]; then
-            echo "Configure ROBLOX_API_KEY, ROBLOX_UNIVERSE_ID e ROBLOX_PLACE_ID nos secrets do repositório."
+          if [ -z "$KEY" ] || [ -z "$UNIVERSE" ] || [ -z "$PLACE" ]; then
+            echo "Configure MYSTERY_MACHINE_API_KEY, MYSTERY_MACHINE_UNIVERSE_ID e MYSTERY_MACHINE_PLACE_ID."
             exit 1
           fi
       - name: Gerar place
-        run: python3 tools/build_place.py MutantFactory.rbxlx
+        run: python3 tools/build_place.py MysteryMachine.rbxlx
       - name: Publicar via Open Cloud
         env:
-          ROBLOX_API_KEY: ${{ secrets.ROBLOX_API_KEY }}
-          ROBLOX_UNIVERSE_ID: ${{ secrets.ROBLOX_UNIVERSE_ID }}
-          ROBLOX_PLACE_ID: ${{ secrets.ROBLOX_PLACE_ID }}
+          ROBLOX_API_KEY: ${{ secrets.MYSTERY_MACHINE_API_KEY }}
+          ROBLOX_UNIVERSE_ID: ${{ secrets.MYSTERY_MACHINE_UNIVERSE_ID }}
+          ROBLOX_PLACE_ID: ${{ secrets.MYSTERY_MACHINE_PLACE_ID }}
         run: |
           status=$(curl -sS -o response.json -w "%{http_code}" -X POST \
             "https://apis.roblox.com/universes/v1/${ROBLOX_UNIVERSE_ID}/places/${ROBLOX_PLACE_ID}/versions?versionType=Published" \
             -H "x-api-key: ${ROBLOX_API_KEY}" \
             -H "Content-Type: application/xml" \
-            --data-binary @MutantFactory.rbxlx)
+            --data-binary @MysteryMachine.rbxlx)
           cat response.json
           if [ "$status" != "200" ]; then
             echo "Falha ao publicar (HTTP $status)"

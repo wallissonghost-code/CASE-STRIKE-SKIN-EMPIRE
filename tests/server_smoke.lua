@@ -1,8 +1,8 @@
--- Teste de fumaça do SERVIDOR e do CLIENTE reais (src/) num ambiente Roblox simulado.
--- Cobre: carga/gravação com trava de sessão, distribuição das bases, esteira, ovos,
--- coleta dentro da base, escudo, roubo completo (pegar, defender, tempo esgotado, saídas),
--- remotes com deduplicação e limite de frequência, falhas de DataStore, reinício do servidor,
--- servidor cheio e a interface real conectada ao servidor.
+-- Teste do SERVIDOR e do CLIENTE reais (src/) num ambiente Roblox simulado (tests/roblox_mock.lua).
+-- Cobre: mapa, carga/gravação com trava de sessão, máquinas (proximidade, preço do servidor,
+-- requestId repetido, intervalo, nível), inventário, vitrine 3D, melhorias, presentes, moedas
+-- perdidas, títulos, ranking, falhas de DataStore, reinício de servidor, modo memória e a
+-- interface real conectada ao servidor (cliques nos botões).
 
 local M = __mock
 
@@ -26,13 +26,6 @@ local function truthy(v, msg)
 	if not v then
 		error(msg or "esperado verdadeiro", 2)
 	end
-end
-local function count(t)
-	local n = 0
-	for _ in pairs(t) do
-		n = n + 1
-	end
-	return n
 end
 
 ---------------------------------------------------------------------------
@@ -58,6 +51,13 @@ warn = function(...)
 	end
 	M.warnings = M.warnings or {}
 	table.insert(M.warnings, table.concat(parts, " "))
+end
+local realPrint = print
+print = function(...)
+	local first = tostring((...))
+	if string.sub(first, 1, 17) ~= "[MYSTERY MACHINE]" then
+		realPrint(...)
+	end
 end
 
 local function mount(parent, folderName, diskPath)
@@ -85,16 +85,21 @@ local function mount(parent, folderName, diskPath)
 	return folder
 end
 
-local function bootServer(jobId)
+local STORE = "MysteryMachine_Profiles_v1"
+
+local function bootServer(jobId, before)
 	moduleCache = {}
 	M.fired = {}
 	local g, RS = M.newGame(jobId)
+	if before then
+		before()
+	end
 	local shared = mount(RS, "Shared", "src/shared")
 	local server = mount(g:GetService("ServerScriptService"), "Server", "src/server")
 	M.run(function()
 		require(server:FindFirstChild("Main"))
 	end)
-	local svc = function(name)
+	local function svc(name)
 		return moduleCache[server.Services:FindFirstChild(name)]
 	end
 	return {
@@ -102,12 +107,19 @@ local function bootServer(jobId)
 			return RS:FindFirstChild("Remotes"):FindFirstChild(name)
 		end,
 		pds = svc("PlayerDataService"),
-		base = svc("BaseService"),
-		conveyor = svc("ConveyorService"),
-		steal = svc("StealService"),
-		events = svc("EventService"),
 		map = svc("MapService"),
-		eventConfig = moduleCache[shared.Config.EventConfig],
+		machine = svc("MachineService"),
+		economy = svc("EconomyService"),
+		showcase = svc("ShowcaseService"),
+		leaderboard = svc("LeaderboardService"),
+		mission = svc("MissionService"),
+		shared = function(path)
+			local node = shared
+			for part in string.gmatch(path, "[^/]+") do
+				node = node:FindFirstChild(part)
+			end
+			return moduleCache[node] or require(node)
+		end,
 	}
 end
 
@@ -118,30 +130,13 @@ local function invoke(server, name, player, payload)
 	end)
 end
 
-local function lastView(player)
-	for i = #M.fired, 1, -1 do
-		local f = M.fired[i]
-		if f.remote == "DataUpdated" and f.player == player then
-			return f.data
-		end
-	end
-end
-
-local function notes(player, kind)
-	local out = {}
-	for _, f in ipairs(M.fired) do
-		if f.remote == "Notify" and (f.player == player or f.all) and (not kind or f.data.kind == kind) then
-			table.insert(out, f.data.text)
-		end
-	end
-	return out
-end
-
 local function makeChar(p, x, z)
 	local char = M.instance("Model", p.Name)
 	local hrp = M.instance("Part", "HumanoidRootPart")
 	hrp.Position = Vector3.new(x or 0, 3, z or 0)
 	hrp.Parent = char
+	local head = M.instance("Part", "Head")
+	head.Parent = char
 	local hum = M.instance("Humanoid", "Humanoid")
 	hum.Parent = char
 	p.Character = char
@@ -149,432 +144,413 @@ local function makeChar(p, x, z)
 	return char
 end
 
-local function moveTo(p, x, z)
-	p.Character.HumanoidRootPart.Position = Vector3.new(x, 3, z)
+local function moveTo(p, pos)
+	p.Character.HumanoidRootPart.Position = Vector3.new(pos.X, 3, pos.Z)
 end
 
-local function join(S, id, name)
+local function join(id, name)
 	local p = M.newPlayer(id, name)
-	makeChar(p, 0, 30)
+	makeChar(p, 0, 8)
 	M.addPlayer(p)
 	M.advance(1)
 	return p
 end
 
-local function triggerPrompt(prompt, player)
-	game:GetService("ProximityPromptService").PromptTriggered:Fire(prompt, player)
-	M.advance(0.05)
+local function leave(p)
+	M.removePlayer(p)
+	M.advance(2)
 end
 
-local function findPrompt(container, attr, value)
-	for _, d in ipairs(container:GetDescendants()) do
-		if d.ClassName == nil and rawget(d, "__class") == "ProximityPrompt" and d:GetAttribute(attr) == value then
-			return d
+local function record(userId)
+	return M.datastore[STORE] and M.datastore[STORE]["Player_" .. userId]
+end
+
+local function firedTo(player, remote)
+	local out = {}
+	for _, f in ipairs(M.fired) do
+		if f.remote == remote and (f.player == player or f.all) then
+			table.insert(out, f.data)
 		end
 	end
+	return out
 end
 
-local STORE = "MutantFactory_Profiles_v1"
+local function notes(player)
+	local out = {}
+	for _, d in ipairs(firedTo(player, "Notify")) do
+		table.insert(out, d.text)
+	end
+	return table.concat(out, " | ")
+end
+
+local function nearMachine(S, p, id)
+	moveTo(p, S.map.machines[id].standPoint)
+end
+
+local function use(S, p, id, extra)
+	local payload = { action = "use", machineId = id }
+	for k, v in pairs(extra or {}) do
+		payload[k] = v
+	end
+	local r = invoke(S, "RequestMachineUse", p, payload)
+	M.advance(1)
+	return r
+end
 
 ---------------------------------------------------------------------------
 print("== Servidor simulado ==")
 
 local S = bootServer("job-A")
--- horário fixo fora de eventos para resultados previsíveis
-local EC = S.eventConfig
-M.epoch = math.floor((M.epoch) / EC.Period) * EC.Period + 600 - M.clock
-local alice = join(S, 101, "Alice")
-local MapConfig = moduleCache[game:GetService("ReplicatedStorage").Shared.Config.MapConfig]
+local alice = join(101, "Alice")
 
-test("servidor inicia, cria remotes, mapa e 6 bases", function()
-	truthy(S.remote("EggAction") and S.remote("Notify"))
-	local world = workspace:FindFirstChild("MutantWorld")
-	truthy(world, "mapa construído")
-	for i = 1, 6 do
-		truthy(world:FindFirstChild("Base" .. i), "base " .. i)
+test("servidor inicia: remotes, parque, 4 máquinas físicas, loja, ranking e 8 vitrines", function()
+	for _, name in ipairs({ "RequestMachineUse", "MachineResult", "InventoryAction", "UpgradeAction", "DataUpdated", "ProgressAction", "Notify" }) do
+		truthy(S.remote(name), "remote " .. name)
 	end
-	truthy(world:FindFirstChild("ConveyorBelt"))
+	local world = workspace:FindFirstChild("MysteryPark")
+	truthy(world, "mapa")
+	for _, id in ipairs({ "common", "neon", "golden", "mystery" }) do
+		local model = world.Machines:FindFirstChild("Machine_" .. id)
+		truthy(model, "máquina " .. id)
+		for _, partName in ipairs({ "Body", "Visor", "Tray", "TrayPoint", "Button", "Lights", "Capsules", "Sign" }) do
+			truthy(model:FindFirstChild(partName), id .. "." .. partName)
+		end
+		local prompt = model.Button:FindFirstChildOfClass("ProximityPrompt")
+		truthy(prompt and prompt:GetAttribute("MachineId") == id, "botão com prompt")
+	end
+	truthy(world:FindFirstChild("UpgradeShop") and world:FindFirstChild("RankingBoard") and world:FindFirstChild("Gallery"))
+	truthy(world:FindFirstChild("FutureArea"), "área para futuras atualizações")
+	eq(#S.map.booths, 8)
+	truthy(world:FindFirstChild("Spawn"))
 end)
 
-test("perfil carrega com trava de sessão, base atribuída e personagem levado até ela", function()
+test("perfil novo: 250 Coins, trava de sessão gravada, leaderstats, vitrine e fotografia enviada", function()
 	truthy(S.pds.isLoaded(alice))
-	local rec = M.datastore[STORE]["p_101"]
-	truthy(rec and rec.lock and rec.lock.jobId == "job-A", "trava gravada")
-	eq(alice:GetAttribute("BaseIndex"), 1)
-	local pos = alice.Character.HumanoidRootPart.Position
-	eq(MapConfig.baseAt(pos.X, pos.Z), 1, "teleportado para a base")
-	local v = lastView(alice)
-	truthy(v, "DataUpdated enviado")
-	eq(v.coins, 300)
-	eq(v.baseIndex, 1)
-	truthy(v.shieldUntil > 0, "proteção de novato")
-	truthy(alice:FindFirstChild("leaderstats"))
+	eq(S.pds.getProfile(alice).coins, 250)
+	local rec = record(101)
+	truthy(rec and rec.lock and rec.lock.job == "job-A", "trava")
+	eq(alice.leaderstats.Coins.Value, 250)
+	truthy(S.showcase.boothOf(alice), "estande atribuído")
+	local views = firedTo(alice, "DataUpdated")
+	truthy(#views > 0 and views[#views].coins == 250)
 end)
 
-test("esteira solta criaturas e elas andam até sumir", function()
-	M.advance(8)
-	local n = count(S.conveyor._items)
-	truthy(n >= 2, "itens na esteira: " .. n)
-	local first
-	for _, it in pairs(S.conveyor._items) do
-		first = it
-	end
-	local x0 = first.x
+test("máquina: longe recusa; perto cobra 25, entrega objeto e anima para todos", function()
+	moveTo(alice, Vector3.new(0, 0, 40))
+	local far = use(S, alice, "common")
+	eq(far.error, "far")
+	eq(S.pds.getProfile(alice).coins, 250)
+	nearMachine(S, alice, "common")
+	M.fired = {}
+	local r = use(S, alice, "common")
+	truthy(r.ok, r.message)
+	local p = S.pds.getProfile(alice)
+	eq(p.coins, 225)
+	eq(p.inventory[r.itemId], 1)
+	truthy(p.discovered[r.itemId])
+	local broadcast = firedTo(nil, "MachineResult")
+	eq(#broadcast, 1)
+	eq(broadcast[1].itemId, r.itemId)
+	eq(alice.leaderstats.Coins.Value, 225)
+end)
+
+test("máquina: preço/resultado enviados pelo cliente são ignorados", function()
+	local before = S.pds.getProfile(alice).coins
+	local r = use(S, alice, "common", { price = 0, itemId = "secret_artifact", r = 0.99999 })
+	truthy(r.ok)
+	eq(S.pds.getProfile(alice).coins, before - 25 + r.levelCoins)
+end)
+
+test("máquina: mesmo requestId repetido não cobra duas vezes", function()
+	local before = S.pds.getProfile(alice).coins
+	local r1 = use(S, alice, "common", { requestId = "abc-1" })
+	local r2 = use(S, alice, "common", { requestId = "abc-1" })
+	truthy(r1.ok)
+	eq(r2.itemId, r1.itemId)
+	eq(S.pds.getProfile(alice).coins, before - 25 + r1.levelCoins, "subida de nível incluída")
+end)
+
+test("máquina: aberturas simultâneas recusadas pelo intervalo mínimo e limite de frequência", function()
 	M.advance(2)
-	truthy(first.x > x0, "andou")
-end)
-
-test("comprar na esteira: precisa estar perto, cobra o preço do servidor e vai para a base", function()
-	local profile = S.pds.getProfile(alice)
-	profile.coins = 1e7
-	local id, item
-	for k, it in pairs(S.conveyor._items) do
-		id, item = k, it
-	end
-	local far = S.conveyor.buy(alice, id)
-	eq(far.error, "too_far")
-	moveTo(alice, item.x, 6)
-	local price = item.offer.price
-	local res = S.conveyor.buy(alice, id)
-	truthy(res.ok, tostring(res.message))
-	eq(profile.coins, 1e7 - price)
-	eq(count(profile.creatures), 1)
-	eq(S.conveyor._items[id], nil, "saiu da esteira")
-	local again = S.conveyor.buy(alice, id)
-	eq(again.error, "offer_gone")
-	truthy(workspace.MutantWorld.Creatures:FindFirstChild("c1"), "modelo no pedestal")
-end)
-
-test("compra pela tecla E (prompt) na esteira", function()
-	local id, item
-	for k, it in pairs(S.conveyor._items) do
-		id, item = k, it
-	end
-	moveTo(alice, item.x, 5)
-	local before = count(S.pds.getProfile(alice).creatures)
-	local prompt = findPrompt(item.model, "ConveyorId", id)
-	truthy(prompt, "prompt existe")
-	triggerPrompt(prompt, alice)
-	eq(count(S.pds.getProfile(alice).creatures), before + 1)
-end)
-
-test("ovo via remote; pedido repetido não cobra duas vezes; formato inválido rejeitado", function()
-	local profile = S.pds.getProfile(alice)
-	local coins = profile.coins
-	local res = invoke(S, "EggAction", alice, { action = "hatch", eggId = "raro", requestId = "egg-1" })
-	truthy(res.ok, tostring(res.message))
-	truthy(res.data.speciesId)
-	eq(profile.coins, coins - 10000)
-	local again = invoke(S, "EggAction", alice, { action = "hatch", eggId = "raro", requestId = "egg-1" })
-	truthy(again.ok)
-	eq(profile.coins, coins - 10000, "não cobrou de novo")
-	for _, payload in ipairs({ "lixo", { action = 5 }, { action = "hatch", eggId = "../x" }, { action = "hatch", eggId = "basico", price = -1 } }) do
-		M.advance(1)
-		local r = invoke(S, "EggAction", alice, payload)
-		if type(payload) == "table" and payload.price then
-			truthy(r.ok, "preço do cliente ignorado")
-			coins = coins - 300
-		else
-			eq(r.ok, false)
-		end
-	end
-	eq(profile.coins, coins - 10000)
-end)
-
-test("limite de frequência dos ovos", function()
-	M.advance(5)
-	local limited = false
+	local first = invoke(S, "RequestMachineUse", alice, { action = "use", machineId = "common" })
+	local second = invoke(S, "RequestMachineUse", alice, { action = "use", machineId = "common" })
+	truthy(first.ok)
+	eq(second.error, "busy")
+	local errors = {}
 	for _ = 1, 8 do
-		local r = invoke(S, "EggAction", alice, { action = "hatch", eggId = "basico" })
-		if r.error == "rate_limited" then
-			limited = true
+		local r = invoke(S, "RequestMachineUse", alice, { action = "use", machineId = "common" })
+		errors[r.error or "ok"] = true
+	end
+	truthy(errors.rate, "limite de frequência")
+	M.advance(3)
+end)
+
+test("máquina: bloqueada por nível e desconhecida", function()
+	nearMachine(S, alice, "neon")
+	eq(use(S, alice, "neon").error, "locked")
+	eq(invoke(S, "RequestMachineUse", alice, { action = "use", machineId = { "x" } }).error, "unknown")
+	eq(invoke(S, "RequestMachineUse", alice, "lixo").error, "invalid")
+end)
+
+test("inventário: vender atualiza saldo; vender a mesma cópia duas vezes falha", function()
+	local p = S.pds.getProfile(alice)
+	p.inventory = { cup = 1 }
+	local coins = p.coins
+	local r1 = invoke(S, "InventoryAction", alice, { action = "sell", itemId = "cup", amount = 1, value = 999999 })
+	truthy(r1.ok, r1.message)
+	eq(p.coins, coins + 10, "valor do servidor")
+	local r2 = invoke(S, "InventoryAction", alice, { action = "sell", itemId = "cup", amount = 1 })
+	eq(r2.error, "missing")
+	eq(p.coins, coins + 10)
+end)
+
+test("vitrine: expor mostra o modelo 3D com placa no estande; item exposto não pode ser vendido", function()
+	local p = S.pds.getProfile(alice)
+	p.inventory.teddy = 1
+	local r = invoke(S, "InventoryAction", alice, { action = "display", itemId = "teddy" })
+	truthy(r.ok, r.message)
+	M.advance(0.5)
+	local booth = S.map.booths[S.showcase.boothOf(alice)]
+	truthy(booth.slots[1].model, "modelo exposto")
+	eq(booth.slots[1].model.Name, "teddy")
+	truthy(string.find(booth.sign.Text, "Alice"), "placa do dono")
+	eq(invoke(S, "InventoryAction", alice, { action = "sell", itemId = "teddy", amount = 1, confirm = true }).error, "displayed")
+	eq(invoke(S, "InventoryAction", alice, { action = "display", itemId = "teddy", slot = 2 }).error, "noCopy")
+	truthy(invoke(S, "InventoryAction", alice, { action = "undisplay", slot = 1 }).ok)
+	M.advance(0.5)
+	eq(booth.slots[1].model, nil)
+end)
+
+test("melhorias pelo remote", function()
+	local p = S.pds.getProfile(alice)
+	p.coins = 1000
+	local r = invoke(S, "UpgradeAction", alice, { action = "buy", upgradeId = "capacity" })
+	truthy(r.ok, r.message)
+	eq(p.coins, 800)
+	eq(p.upgrades.capacity, 1)
+end)
+
+test("presente diário pelo remote: uma vez por dia", function()
+	local r = invoke(S, "ProgressAction", alice, { action = "claimGift" })
+	truthy(r.ok, r.message)
+	eq(invoke(S, "ProgressAction", alice, { action = "claimGift" }).error, "claimed")
+end)
+
+test("moedas perdidas: só coleta quem está perto, e a moeda reaparece", function()
+	local coins = S.economy.activeCoins()
+	local spot, coin = next(coins)
+	truthy(coin, "moeda no mapa")
+	local p = S.pds.getProfile(alice)
+	local before = p.coins
+	moveTo(alice, Vector3.new(coin.Position.X + 40, 0, coin.Position.Z))
+	coin.Touched:Fire(alice.Character.HumanoidRootPart)
+	M.advance(0.2)
+	eq(p.coins, before, "longe não coleta")
+	moveTo(alice, coin.Position)
+	coin.Touched:Fire(alice.Character.HumanoidRootPart)
+	M.advance(0.2)
+	truthy(p.coins > before, "coletou")
+	eq(coins[spot], nil)
+	local count = 0
+	for _ in pairs(coins) do
+		count = count + 1
+	end
+	M.advance(25)
+	local after = 0
+	for _ in pairs(coins) do
+		after = after + 1
+	end
+	eq(after, count + 1, "reapareceu")
+end)
+
+test("teleporte do menu leva até a máquina", function()
+	local r = invoke(S, "ProgressAction", alice, { action = "goto", target = "golden" })
+	truthy(r.ok)
+	local pos = alice.Character.HumanoidRootPart.Position
+	eq(pos.Z, S.map.machines.golden.standPoint.Z)
+	eq(invoke(S, "ProgressAction", alice, { action = "goto", target = "lua" }).error, "invalid")
+end)
+
+test("coleção: completar parte dá título exibido acima da cabeça", function()
+	local p = S.pds.getProfile(alice)
+	for _, id in ipairs({ "cup", "ball", "toy_car", "teddy", "headphones" }) do
+		p.discovered[id] = 1
+	end
+	truthy(invoke(S, "ProgressAction", alice, { action = "claimSet", setId = "set_common" }).ok)
+	truthy(invoke(S, "ProgressAction", alice, { action = "setTitle", titleId = "starter" }).ok)
+	M.advance(0.5)
+	local tag = alice.Character.Head:FindFirstChild("TitleTag")
+	truthy(tag, "título no personagem")
+	truthy(string.find(notes(alice), "Novo título"), "aviso de título")
+end)
+
+test("missão de tempo de jogo avança sozinha", function()
+	local p = S.pds.getProfile(alice)
+	local playMission
+	for _, m in ipairs(p.daily.missions) do
+		if m.id == "d_play" or m.id == "d_pickup" then
+			playMission = m
 		end
 	end
-	truthy(limited)
-end)
-
-test("coletar só dentro da própria base", function()
-	M.advance(30)
-	moveTo(alice, 0, 0)
-	local out = invoke(S, "BaseAction", alice, { action = "collect" })
-	eq(out.error, "not_in_base")
-	local x, z = MapConfig.toWorld(1, 0, 20)
-	moveTo(alice, x, z)
-	local coins = S.pds.getProfile(alice).coins
-	local res = invoke(S, "BaseAction", alice, { action = "collect" })
-	truthy(res.ok, tostring(res.message))
-	truthy(res.data.coins > 0)
-	eq(S.pds.getProfile(alice).coins, coins + res.data.coins)
-end)
-
-local bob = join(S, 202, "Bob")
-local function aliceUid()
-	local best
-	for uid, c in pairs(S.pds.getProfile(alice).creatures) do
-		if not best or c.pad < S.pds.getProfile(alice).creatures[best].pad then
-			best = uid
-		end
+	truthy(playMission)
+	local before = playMission.progress
+	S.mission.tickPlaytime()
+	if playMission.id == "d_play" then
+		eq(playMission.progress, before + S.mission.PlaytimeTick)
 	end
-	return best
-end
-local function bobIntoAliceBase(uid)
-	local c = S.pds.getProfile(alice).creatures[uid]
-	local px, pz = MapConfig.padPosition(1, c.pad)
-	moveTo(bob, px + 2, pz)
-end
-local function bobHome()
-	local x, z = MapConfig.toWorld(2, 0, 20)
-	moveTo(bob, x, z)
-end
-
-test("segundo jogador recebe outra base", function()
-	eq(bob:GetAttribute("BaseIndex"), 2)
 end)
 
-test("proteção de novato impede roubo", function()
-	local uid = aliceUid()
-	bobIntoAliceBase(uid)
-	local res = S.steal.begin(bob, alice, uid)
-	eq(res.error, "shielded")
-end)
-
-test("roubo completo: pegar, dono avisado, venda travada, entrega muda o dono e salva os dois", function()
-	M.advance(125) -- termina a proteção de novato
-	local uid = aliceUid()
-	local c = S.pds.getProfile(alice).creatures[uid]
-	local species = c.s
-	local aliceCount = count(S.pds.getProfile(alice).creatures)
-	bobIntoAliceBase(uid)
-	local prompt = findPrompt(workspace.MutantWorld.Creatures, "Uid", uid)
-	truthy(prompt, "prompt de roubo")
-	triggerPrompt(prompt, bob)
-	truthy(S.steal._carries[bob], "Bob está carregando")
-	truthy(bob.Character:FindFirstChild("CarriedCreature"), "criatura na cabeça")
-	truthy(#notes(alice, "theft") >= 1, "Alice avisada")
-	local sell = invoke(S, "BaseAction", alice, { action = "sell", uid = uid, confirm = true })
-	eq(sell.error, "being_stolen")
-	M.advance(1)
-	eq(bob.Character.Humanoid.WalkSpeed, 12, "mais devagar carregando")
-	bobHome()
-	M.advance(0.5)
-	eq(S.steal._carries[bob], nil)
-	eq(count(S.pds.getProfile(alice).creatures), aliceCount - 1)
-	local got
-	for _, bc in pairs(S.pds.getProfile(bob).creatures) do
-		got = bc
+test("erro inesperado no meio de uma operação restaura o perfil", function()
+	local p = S.pds.getProfile(alice)
+	local coins = p.coins
+	local ProfileOps = S.shared("Logic/ProfileOps")
+	local original = ProfileOps.buyUpgrade
+	ProfileOps.buyUpgrade = function(profile)
+		profile.coins = 0
+		error("falha simulada")
 	end
-	eq(got.s, species)
-	eq(got.origin, "stolen")
-	eq(S.pds.getProfile(bob).stats.stolen, 1)
-	M.advance(4)
-	local recA = M.datastore[STORE]["p_101"].data
-	local recB = M.datastore[STORE]["p_202"].data
-	eq(count(recA.creatures), aliceCount - 1, "vítima salva")
-	eq(count(recB.creatures), 1, "ladrão salvo")
+	local r = invoke(S, "UpgradeAction", alice, { action = "buy", upgradeId = "speed" })
+	ProfileOps.buyUpgrade = original
+	eq(r.error, "server")
+	eq(S.pds.getProfile(alice).coins, coins)
 end)
 
-test("defesa: o dono encosta em quem rouba e a criatura volta", function()
-	local uid = aliceUid()
-	bobIntoAliceBase(uid)
-	local res = S.steal.begin(bob, alice, uid)
-	truthy(res.ok, tostring(res.message))
-	local pos = bob.Character.HumanoidRootPart.Position
-	moveTo(alice, pos.X + 2, pos.Z)
-	M.advance(0.5)
-	eq(S.steal._carries[bob], nil)
-	truthy(S.pds.getProfile(alice).creatures[uid], "voltou para Alice")
-	eq(S.pds.getProfile(alice).stats.defended, 1)
-	eq(bob.Character:FindFirstChild("CarriedCreature"), nil)
+test("ranking: servidor calcula da memória e grava o global no OrderedDataStore", function()
+	local bob = join(102, "Bob")
+	S.pds.getProfile(bob).inventory = { crown = 1 }
+	M.advance(20)
+	local cache = S.leaderboard.get()
+	eq(cache.server.value[1].name, "Bob")
+	truthy(M.datastore["MysteryMachine_LB_value_v1"]["101"], "global gravado")
+	leave(bob)
 end)
 
-test("tempo esgotado devolve a criatura", function()
-	local uid = aliceUid()
-	local ax, az = MapConfig.toWorld(1, 0, 20)
-	moveTo(alice, ax + 30, az) -- longe
-	bobIntoAliceBase(uid)
-	truthy(S.steal.begin(bob, alice, uid).ok)
-	moveTo(bob, 0, 0) -- foge para a praça e fica parado
-	M.advance(46)
-	eq(S.steal._carries[bob], nil)
-	truthy(S.pds.getProfile(alice).creatures[uid])
-end)
-
-test("escudo: só dentro da base, empurra intrusos e bloqueia roubo", function()
-	local uid = aliceUid()
-	bobIntoAliceBase(uid)
-	moveTo(alice, 0, 0)
-	eq(invoke(S, "BaseAction", alice, { action = "shield" }).error, "not_in_base")
-	local x, z = MapConfig.toWorld(1, 0, 20)
-	moveTo(alice, x, z)
-	local res = invoke(S, "BaseAction", alice, { action = "shield" })
-	truthy(res.ok, tostring(res.message))
-	M.advance(0.5)
-	local bp = bob.Character.HumanoidRootPart.Position
-	truthy(MapConfig.baseAt(bp.X, bp.Z) ~= 1, "Bob foi empurrado para fora")
-	bobIntoAliceBase(uid)
-	eq(S.steal.begin(bob, alice, uid).error, "shielded")
-	eq(invoke(S, "BaseAction", alice, { action = "shield" }).error, "shield_active")
+test("autosave renova a trava e tenta de novo após falha temporária", function()
+	M.failNext = 1
 	M.advance(65)
-	M.advance(1)
+	local rec = record(101)
+	eq(rec.data.coins, S.pds.getProfile(alice).coins)
+	truthy(rec.lock and rec.lock.job == "job-A")
+	eq(M.failNext, 0)
 end)
 
-test("escudo ligado com o ladrão ainda dentro devolve a criatura", function()
-	local uid = aliceUid()
-	bobIntoAliceBase(uid)
-	local ax, az = MapConfig.toWorld(1, 20, 20)
-	moveTo(alice, ax, az)
-	truthy(S.steal.begin(bob, alice, uid).ok)
-	truthy(invoke(S, "BaseAction", alice, { action = "shield" }).ok)
-	eq(S.steal._carries[bob], nil)
-	truthy(S.pds.getProfile(alice).creatures[uid])
-	M.advance(72)
+test("saída salva e libera a trava; outro servidor carrega os mesmos dados", function()
+	local p = S.pds.getProfile(alice)
+	p.coins = 4321
+	p.inventory.diamond = 2
+	leave(alice)
+	local rec = record(101)
+	eq(rec.lock, nil, "trava liberada")
+	eq(rec.data.coins, 4321)
+	local S2 = bootServer("job-B")
+	local again = join(101, "Alice")
+	local p2 = S2.pds.getProfile(again)
+	truthy(p2, "carregou")
+	eq(p2.coins, 4321)
+	eq(p2.inventory.diamond, 2)
+	S = S2
+	alice = again
 end)
 
-test("ladrão sai do servidor no meio do roubo: criatura volta", function()
-	local cara = join(S, 303, "Cara")
-	local uid = aliceUid()
-	local c = S.pds.getProfile(alice).creatures[uid]
-	local px, pz = MapConfig.padPosition(1, c.pad)
-	moveTo(cara, px + 2, pz)
-	moveTo(alice, 300, 300)
-	truthy(S.steal.begin(cara, alice, uid).ok)
-	M.removePlayer(cara)
-	M.advance(1)
-	eq(S.steal._carries[cara], nil)
-	truthy(S.pds.getProfile(alice).creatures[uid])
-	truthy(workspace.MutantWorld.Creatures:FindFirstChild(uid), "modelo de volta ao pedestal")
+test("trava de sessão: segundo servidor não carrega nem sobrescreve perfil aberto", function()
+	local rec = record(101)
+	local coins = rec.data.coins
+	-- outro servidor tenta abrir o mesmo jogador
+	local S3 = bootServer("job-C")
+	local clone = M.newPlayer(101, "Alice")
+	makeChar(clone, 0, 8)
+	M.addPlayer(clone)
+	M.advance(40)
+	eq(S3.pds.isLoaded(clone), false)
+	truthy(clone.kicked and string.find(clone.kicked, "outro servidor"), "aviso")
+	eq(record(101).lock.job, "job-B")
+	eq(record(101).data.coins, coins)
 end)
 
-test("melhorias, poções, venda e missões via remotes", function()
-	local profile = S.pds.getProfile(alice)
-	profile.coins = 1e8
-	local slots = invoke(S, "BaseAction", alice, { action = "upgrade", upgradeId = "slots" })
-	truthy(slots.ok, tostring(slots.message))
-	M.advance(0.1)
-	eq(lastView(alice).slots, 10)
-	truthy(invoke(S, "EggAction", alice, { action = "buyPotion", potionId = "sorte" }).ok)
-	truthy(invoke(S, "EggAction", alice, { action = "usePotion", potionId = "sorte" }).ok)
-	M.advance(0.1)
-	truthy(lastView(alice).luck > 0)
-	local uid = aliceUid()
-	local n = count(profile.creatures)
-	local sold = invoke(S, "BaseAction", alice, { action = "sell", uid = uid, confirm = true })
-	truthy(sold.ok, tostring(sold.message))
-	eq(count(profile.creatures), n - 1)
-	eq(invoke(S, "BaseAction", alice, { action = "upgrade", upgradeId = "nada" }).ok, false)
-	local gift = invoke(S, "ClaimAction", alice, { action = "gift" })
-	truthy(gift.ok, tostring(gift.message))
-	eq(invoke(S, "ClaimAction", alice, { action = "gift" }).error, "already_claimed")
-	local studioOnly = invoke(S, "SettingsAction", alice, { action = "testEvent", eventId = "hora_sorte" })
-	eq(studioOnly.error, "forbidden", "evento de teste só no Studio")
-	local set = invoke(S, "SettingsAction", alice, { action = "set", key = "reduceEffects", value = true })
-	truthy(set.ok)
+test("falha ao carregar: jogador é avisado e nada é gravado por cima", function()
+	M.datastore[STORE]["Player_303"] = { data = { coins = 999, inventory = { crown = 1 } } }
+	local S4 = bootServer("job-D")
+	M.failNext = 50
+	local carol = M.newPlayer(303, "Carol")
+	makeChar(carol, 0, 8)
+	M.addPlayer(carol)
+	M.advance(60)
+	M.failNext = 0
+	eq(S4.pds.isLoaded(carol), false)
+	truthy(carol.kicked, "desconectado com aviso")
+	eq(record(303).data.coins, 999)
+	eq(record(303).data.inventory.crown, 1)
 end)
 
-test("evento começa: todos são avisados e a sorte da esteira/ovos muda", function()
-	S.events.force("hora_sorte", 60)
+test("perfil corrompido é reparado ao carregar", function()
+	M.datastore[STORE]["Player_404"] = { data = { coins = -10, inventory = { cup = "2", hack = 50 }, showcase = { "hack" } } }
+	local S5 = bootServer("job-E")
+	local dan = join(404, "Dan")
+	local p = S5.pds.getProfile(dan)
+	eq(p.coins, 0)
+	eq(p.inventory.cup, 2)
+	eq(p.inventory.hack, nil)
+	eq(p.showcase[1], "")
+	leave(dan)
+end)
+
+test("desligamento do servidor salva todos e libera as travas", function()
+	local S6 = bootServer("job-F")
+	local eve = join(505, "Eve")
+	S6.pds.getProfile(eve).coins = 777
+	M.run(function()
+		for _, fn in ipairs(M.closeHandlers) do
+			fn()
+		end
+	end)
+	eq(record(505).data.coins, 777)
+	eq(record(505).lock, nil)
+end)
+
+test("pedido de quem saiu é recusado", function()
+	local S7 = bootServer("job-G")
+	local fay = join(606, "Fay")
+	leave(fay)
+	eq(invoke(S7, "RequestMachineUse", fay, { action = "use", machineId = "common" }).error, "loading")
+end)
+
+test("sem acesso a API (Studio): modo memória avisa e o jogo funciona", function()
+	local S8 = bootServer("job-H", function()
+		M.services.DataStoreService = {
+			GetDataStore = function()
+				return {
+					UpdateAsync = function()
+						error("403: You must publish this place to access DataStore (Studio API access)")
+					end,
+				}
+			end,
+			GetOrderedDataStore = function()
+				return {}
+			end,
+		}
+	end)
+	eq(S8.pds.memoryMode, true)
+	local gus = join(707, "Gus")
+	truthy(S8.pds.isLoaded(gus))
+	eq(S8.pds.getProfile(gus).coins, 250)
 	local found = false
-	for _, t in ipairs(notes(alice, "event")) do
-		if string.find(t, "Hora da Sorte", 1, true) then
+	for _, w in ipairs(M.warnings or {}) do
+		if string.find(w, "MODO MEMÓRIA") then
 			found = true
 		end
 	end
-	truthy(found, "aviso do evento")
-	M.advance(0.2)
-	truthy(lastView(alice).event and lastView(alice).event.id == "hora_sorte")
-	EC.override = nil
-end)
-
-test("renascimento via remote", function()
-	local profile = S.pds.getProfile(alice)
-	profile.coins = 1e7
-	local wrong = invoke(S, "ClaimAction", alice, { action = "rebirth", phrase = "sim" })
-	eq(wrong.error, "confirmation_required")
-	local res = invoke(S, "ClaimAction", alice, { action = "rebirth", phrase = "RENASCER" })
-	truthy(res.ok, tostring(res.message))
-	profile = S.pds.getProfile(alice) -- o pedido recusado antes restaurou a cópia de segurança
-	eq(profile.rebirths, 1)
-	eq(count(profile.creatures), 0)
-	for _, m in ipairs(workspace.MutantWorld.Creatures:GetChildren()) do
-		truthy(m:GetAttribute("OwnerUserId") ~= 101, "modelo da Alice sobrou: " .. m.Name)
-	end
-end)
-
-test("ranking do servidor", function()
-	local r = invoke(S, "RankingRequest", bob, { action = "get" })
-	truthy(r.ok)
-	eq(#r.data, 2)
-end)
-
-test("servidor cheio: 7º jogador é avisado", function()
-	local extra = {}
-	for i = 1, 4 do
-		extra[i] = join(S, 400 + i, "P" .. i)
-	end
-	local seventh = join(S, 499, "Sétimo")
-	truthy(seventh.kicked and string.find(seventh.kicked, "cheio"), "expulso com aviso")
-	for _, p in ipairs(extra) do
-		M.removePlayer(p)
-	end
-	M.advance(2)
-end)
-
-test("falhas temporárias do DataStore são repetidas e o salvamento conclui", function()
-	S.pds.getProfile(bob).coins = 4242
-	M.failNext = 2
-	M.advance(70) -- autosave
-	eq(M.datastore[STORE]["p_202"].data.coins, 4242)
-end)
-
-local bobCoins = S.pds.getProfile(bob).coins
-local bobCreatures = count(S.pds.getProfile(bob).creatures)
-
-test("perfil travado por outro servidor não é carregado", function()
-	M.datastore[STORE]["p_777"] = { data = { coins = 5 }, lock = { jobId = "job-X", time = M.epoch + M.clock } }
-	local p = M.newPlayer(777, "Travado")
-	makeChar(p, 0, 0)
-	M.addPlayer(p)
-	M.advance(40)
-	truthy(p.kicked, "expulso com aviso")
-	eq(M.datastore[STORE]["p_777"].data.coins, 5, "dados intactos")
-end)
-
-test("saída libera a trava e reinício do servidor mantém moedas e criaturas", function()
-	M.removePlayer(bob)
-	M.advance(2)
-	local rec = M.datastore[STORE]["p_202"]
-	eq(rec.lock, nil, "trava liberada")
-	for _, f in ipairs(M.closeHandlers) do
-		M.run(f)
-	end
-	local S2 = bootServer("job-B")
-	local bob2 = join(S2, 202, "Bob")
-	M.advance(2)
-	local p = S2.pds.getProfile(bob2)
-	truthy(p, "carregou")
-	eq(p.coins, bobCoins)
-	eq(count(p.creatures), bobCreatures)
-	S = S2
-	bob = bob2
-end)
-
-test("nenhum aviso inesperado no servidor", function()
-	local unexpected = {}
-	for _, w in ipairs(M.warnings or {}) do
-		if not string.find(w, "UpdateAsync falhou") and not string.find(w, "travado por outro servidor") then
-			table.insert(unexpected, w)
-		end
-	end
-	eq(#unexpected, 0, table.concat(unexpected, " | "))
+	truthy(found, "aviso de modo memória")
 end)
 
 ---------------------------------------------------------------------------
 print("== Cliente simulado (interface real conectada ao servidor) ==")
 
+S = bootServer("job-UI")
+local hero = join(808, "Hero")
 local Players = game:GetService("Players")
-rawset(Players, "LocalPlayer", bob)
-M.localPlayer = bob
-S.pds.getProfile(bob).coins = 500000
+rawset(Players, "LocalPlayer", hero)
+M.localPlayer = hero
+nearMachine(S, hero, "common")
 
 local clientFolder = mount(M.instance("Folder", "StarterPlayerScripts"), "Client", "src/client")
 local clientOk, clientErr = pcall(function()
@@ -583,43 +559,29 @@ local clientOk, clientErr = pcall(function()
 	end)
 end)
 M.advance(3)
-local UI = clientFolder.Controllers and moduleCache[clientFolder.Controllers:FindFirstChild("UIController")]
-local Store = clientFolder.Util and moduleCache[clientFolder.Util:FindFirstChild("Store")]
+local UI = moduleCache[clientFolder.Controllers:FindFirstChild("UIController")]
+local Store = moduleCache[clientFolder.Util:FindFirstChild("Store")]
 
-local function screensInOrder()
-	local first, last, middle = {}, {}, {}
-	for _, g in ipairs(bob.PlayerGui:GetChildren()) do
-		if g.Name == "Dialogs" or g.Name == "Hatch" then
-			table.insert(first, g)
-		elseif g.Name == "MainHUD" or g.Name == "Toasts" then
-			table.insert(last, g)
-		else
-			table.insert(middle, g)
+local function visible(node)
+	while node do
+		if node.Visible == false then
+			return false
 		end
+		node = node.Parent
 	end
-	local out = {}
-	for _, list in ipairs({ first, middle, last }) do
-		for _, g in ipairs(list) do
-			table.insert(out, g)
-		end
-	end
-	return out
+	return true
 end
+
+local ORDER = { Dialogs = 1, MainHUD = 3, Toasts = 3 }
 local function findButton(text, plain)
-	for _, screenGui in ipairs(screensInOrder()) do
-		for _, d in ipairs(screenGui:GetDescendants()) do
-			if d:IsA("TextButton") and d.Text and (d.Text == text or (plain and string.find(d.Text, text, 1, true))) then
-				local visible = true
-				local node = d
-				while node do
-					if node.Visible == false then
-						visible = false
-					end
-					node = node.Parent
-				end
-				if visible then
-					return d
-				end
+	local screens = hero.PlayerGui:GetChildren()
+	table.sort(screens, function(a, b)
+		return (ORDER[a.Name] or 2) < (ORDER[b.Name] or 2)
+	end)
+	for _, gui in ipairs(screens) do
+		for _, d in ipairs(gui:GetDescendants()) do
+			if d:IsA("TextButton") and d.Text and (d.Text == text or (plain and string.find(d.Text, text, 1, true))) and visible(d) then
+				return d
 			end
 		end
 	end
@@ -632,66 +594,189 @@ local function click(text, plain)
 	M.advance(0.6)
 	return b
 end
+local function screenText(text)
+	for _, d in ipairs(hero.PlayerGui:GetDescendants()) do
+		if d.Text and string.find(tostring(d.Text), text, 1, true) and visible(d) then
+			return true
+		end
+	end
+	return false
+end
 
-test("cliente inicia sem erros e recebe a fotografia", function()
+test("cliente inicia sem erros, monta o HUD e recebe a fotografia", function()
 	truthy(clientOk, tostring(clientErr))
-	truthy(bob.PlayerGui:FindFirstChild("MainHUD"), "HUD")
-	truthy(Store and Store.view, "fotografia recebida")
-	eq(Store.view.coins, 500000)
+	local hud = hero.PlayerGui:FindFirstChild("MainHUD")
+	truthy(hud, "MainHUD")
+	truthy(Store.view, "fotografia")
+	eq(Store.view.coins, 250)
+	truthy(screenText("💰 250"), "Coins no HUD")
+	truthy(screenText("Nv 1"), "nível no HUD")
 end)
 
-test("todos os painéis abrem sem erros", function()
-	for _, name in ipairs({ "Eggs", "Base", "Index", "Missions", "Gifts", "Potions", "Rebirth", "Ranking", "Settings" }) do
-		UI.open(name)
-		M.advance(0.3)
-		eq(UI.current, name)
+test("todos os painéis do menu lateral abrem, um por vez, nas telas pedidas", function()
+	local screens = { Machines = "MachineUI", Inventory = "InventoryUI", Collection = "CollectionUI", Upgrades = "UpgradeUI", Missions = "MissionUI", Ranking = "RankingUI", Settings = "SettingsUI" }
+	for panel, screen in pairs(screens) do
+		hero.PlayerGui.MainHUD.SideMenu:FindFirstChild(panel).Activated:Fire()
+		M.advance(0.6)
+		eq(UI.current, panel)
+		truthy(hero.PlayerGui:FindFirstChild(screen), "tela " .. screen)
+		local open = 0
+		for _, p in pairs(UI.panels) do
+			if p.window and p.window.Visible then
+				open = open + 1
+			end
+		end
+		eq(open, 1, "só uma janela aberta")
 	end
 	UI.close(true)
 end)
 
-test("abrir ovo pela interface entrega uma criatura", function()
-	local before = count(S.pds.getProfile(bob).creatures)
-	UI.open("Eggs", { eggId = "basico" })
-	M.advance(0.3)
-	click("ABRIR", true)
-	M.advance(4)
-	eq(count(S.pds.getProfile(bob).creatures), before + 1)
+test("prompt da máquina abre o painel com as chances reais", function()
+	local prompt = S.map.machines.common.button:FindFirstChildOfClass("ProximityPrompt")
+	game:GetService("ProximityPromptService").PromptTriggered:Fire(prompt, hero)
+	M.advance(0.5)
+	eq(UI.current, "Machine")
+	truthy(screenText("Chances reais"), "título das chances")
+	truthy(screenText("45%") and screenText("2%"), "porcentagens")
+	truthy(findButton("USAR MÁQUINA", true), "botão usar")
+end)
+
+test("USAR MÁQUINA: cobra no servidor, anima, permite pular e mostra o resultado", function()
+	local before = S.pds.getProfile(hero).coins
+	click("USAR MÁQUINA", true)
+	local MC = moduleCache[clientFolder.Controllers:FindFirstChild("MachineController")]
+	eq(S.pds.getProfile(hero).coins, before - 25 + MC.state().result.levelCoins)
+	truthy(findButton("PULAR", true), "botão pular durante a animação")
+	click("PULAR", true)
+	local MachineController = moduleCache[clientFolder.Controllers:FindFirstChild("MachineController")]
+	eq(MachineController.state().phase, "result")
+	local itemId = MachineController.state().result.itemId
+	eq(S.pds.getProfile(hero).inventory[itemId], 1)
+	M.advance(1)
+	truthy(S.map.machines.common.model:FindFirstChild("Prize"), "objeto no compartimento")
+	truthy(findButton("VENDER", true), "ações do resultado")
+end)
+
+test("vender o prêmio pela tela de resultado", function()
+	local MachineController = moduleCache[clientFolder.Controllers:FindFirstChild("MachineController")]
+	local itemId = MachineController.state().result.itemId
+	local p = S.pds.getProfile(hero)
+	local coins = p.coins
+	click("VENDER", true)
+	local confirm = findButton("Vender")
+	if confirm then
+		confirm.Activated:Fire()
+		M.advance(0.6)
+	end
+	eq(p.inventory[itemId], nil)
+	truthy(p.coins > coins)
 	UI.close(true)
 end)
 
-test("base pela interface: melhorar e coletar", function()
-	UI.open("Base")
+test("animação sem pular termina sozinha", function()
+	UI.open("Machine", { machineId = "common" })
 	M.advance(0.3)
-	local lvl = S.pds.getProfile(bob).upgrades.storage
-	click("Cofre maior", true)
-	eq(S.pds.getProfile(bob).upgrades.storage, lvl + 1)
+	M.advance(3)
+	click("USAR MÁQUINA", true)
+	M.advance(6)
+	local MachineController = moduleCache[clientFolder.Controllers:FindFirstChild("MachineController")]
+	eq(MachineController.state().phase, "result")
+	UI.close(true)
+end)
+
+test("inventário: cartão, favoritar protege da venda, vender pelo painel", function()
+	local p = S.pds.getProfile(hero)
+	p.inventory = { ball = 3 }
+	S.pds.markDirty(hero)
+	M.advance(0.5)
+	UI.open("Inventory")
+	M.advance(0.3)
+	truthy(screenText("Bola"), "cartão")
+	truthy(screenText("x3"), "quantidade")
+	local card
+	for _, d in ipairs(hero.PlayerGui.InventoryUI:GetDescendants()) do
+		if d.Name == "Card1" then
+			card = d
+		end
+	end
+	card.Activated:Fire()
+	M.advance(0.3)
+	click("☆ Favoritar")
+	eq(p.favorites.ball, true)
+	truthy(findButton("Vender 1"):GetAttribute("Disabled"), "venda bloqueada")
+	click("★ Favorito")
+	click("Vender 1")
+	eq(p.inventory.ball, 2)
+	UI.close(true)
+end)
+
+test("melhorias pela interface", function()
+	S.pds.getProfile(hero).coins = 5000
+	S.pds.markDirty(hero)
+	M.advance(0.5)
+	UI.open("Upgrades")
+	M.advance(0.3)
+	click("COMPRAR", true)
+	local total = 0
+	for _, lvl in pairs(S.pds.getProfile(hero).upgrades) do
+		total = total + lvl
+	end
+	eq(total, 1)
 	UI.close(true)
 end)
 
 test("presente diário pela interface", function()
-	UI.open("Gifts")
+	UI.open("Missions")
 	M.advance(0.3)
-	click("RESGATAR", true)
-	eq(S.pds.getProfile(bob).gifts.streak >= 1, true)
+	click("RESGATAR")
+	eq(S.pds.getProfile(hero).gift.streak, 1)
 	UI.close(true)
 end)
 
-test("aviso de roubo aparece para a vítima", function()
-	S.base.notify(bob, "theft", "🚨 Teste pegou seu Gosminha!")
-	M.advance(0.5)
-	local found = false
-	for _, d in ipairs(bob.PlayerGui:GetDescendants()) do
-		if d.Text and string.find(tostring(d.Text), "pegou seu Gosminha", 1, true) then
-			found = true
-		end
-	end
-	truthy(found)
+test("coleção mostra silhuetas, progresso e aba de títulos", function()
+	UI.open("Collection")
+	M.advance(0.3)
+	truthy(screenText("???"), "não descobertos")
+	truthy(screenText("Descobertos"), "progresso")
+	click("🏷️ Títulos")
+	truthy(screenText("Lenda da Coleção"))
+	UI.close(true)
 end)
 
-test("nenhum aviso inesperado no cliente", function()
+test("configurações: alternar opção salva no servidor", function()
+	UI.open("Settings")
+	M.advance(0.3)
+	local b
+	for _, d in ipairs(hero.PlayerGui.SettingsUI:GetDescendants()) do
+		if d.Name == "autoSkip" then
+			b = d
+		end
+	end
+	b.Activated:Fire()
+	M.advance(0.6)
+	eq(S.pds.getProfile(hero).settings.autoSkip, true)
+	UI.close(true)
+end)
+
+test("ranking recebe o cache do servidor", function()
+	M.advance(16)
+	UI.open("Ranking")
+	M.advance(0.3)
+	truthy(Store.leaderboard and Store.leaderboard.server, "cache")
+	truthy(screenText("Hero"), "nome no ranking")
+	UI.close(true)
+end)
+
+test("avisos do servidor aparecem como notificação", function()
+	S.remote("Notify"):FireClient(hero, { text = "Teste de aviso 123", kind = "info" })
+	M.advance(0.3)
+	truthy(screenText("Teste de aviso 123"))
+end)
+
+test("nenhum aviso inesperado", function()
 	local unexpected = {}
 	for _, w in ipairs(M.warnings or {}) do
-		if not string.find(w, "UpdateAsync falhou") and not string.find(w, "travado por outro servidor") then
+		if not (string.find(w, "UpdateAsync falhou") or string.find(w, "travado por outro servidor") or string.find(w, "MODO MEMÓRIA") or string.find(w, "falha simulada") or string.find(w, "reparado")) then
 			table.insert(unexpected, w)
 		end
 	end

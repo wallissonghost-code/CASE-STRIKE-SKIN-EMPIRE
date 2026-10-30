@@ -1,30 +1,31 @@
--- RateLimiter: balde de fichas por jogador e por categoria de ação.
-
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
+-- Limite de frequência por jogador e categoria (balde de fichas).
 
 local RateLimiter = {}
 
-local buckets = {} -- [player] = { [category] = { tokens, last } }
+RateLimiter.Categories = {
+	machine = { rate = 2, burst = 3 },
+	inventory = { rate = 6, burst = 10 },
+	upgrade = { rate = 3, burst = 5 },
+	progress = { rate = 4, burst = 8 },
+}
+
+local buckets = {} -- [player][category] = { tokens, at }
 
 function RateLimiter.allow(player, category)
-	local cfg = GameConfig.RateLimits[category]
-	if not cfg then
-		return true
+	local cfg = RateLimiter.Categories[category] or RateLimiter.Categories.progress
+	local byPlayer = buckets[player]
+	if not byPlayer then
+		byPlayer = {}
+		buckets[player] = byPlayer
 	end
 	local now = os.clock()
-	local perPlayer = buckets[player]
-	if not perPlayer then
-		perPlayer = {}
-		buckets[player] = perPlayer
-	end
-	local b = perPlayer[category]
+	local b = byPlayer[category]
 	if not b then
-		b = { tokens = cfg.capacity, last = now }
-		perPlayer[category] = b
+		b = { tokens = cfg.burst, at = now }
+		byPlayer[category] = b
 	end
-	b.tokens = math.min(cfg.capacity, b.tokens + (now - b.last) * cfg.refillPerSecond)
-	b.last = now
+	b.tokens = math.min(cfg.burst, b.tokens + (now - b.at) * cfg.rate)
+	b.at = now
 	if b.tokens < 1 then
 		return false
 	end

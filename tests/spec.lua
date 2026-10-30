@@ -1,15 +1,18 @@
--- Testes de lógica do MUTANT FACTORY (módulos compartilhados reais, sem Roblox).
+-- Testes de lógica do MYSTERY MACHINE (sem Roblox): configs, sorteio, economia, inventário,
+-- vitrine, melhorias, níveis, missões, presentes, coleção e reparo de perfis.
 
-local GameConfig = shared_module("Config/GameConfig")
-local ProgressConfig = shared_module("Config/ProgressConfig")
-local EventConfig = shared_module("Config/EventConfig")
-local MapConfig = shared_module("Config/MapConfig")
+local MachineDefinitions = shared_module("MachineDefinitions")
+local ItemDefinitions = shared_module("ItemDefinitions")
+local RarityConfig = shared_module("RarityConfig")
+local EconomyConfig = shared_module("EconomyConfig")
+local UpgradeConfig = shared_module("UpgradeConfig")
+local MissionDefinitions = shared_module("MissionDefinitions")
 local Odds = shared_module("Logic/Odds")
-local Income = shared_module("Logic/Income")
+local Levels = shared_module("Logic/Levels")
 local ProfileSchema = shared_module("Logic/ProfileSchema")
 local ProfileOps = shared_module("Logic/ProfileOps")
 local ClientView = shared_module("Logic/ClientView")
-local TimeUtil = shared_module("Util/TimeUtil")
+local Format = shared_module("Util/Format")
 
 local passed, failed = 0, 0
 local function test(name, fn)
@@ -27,519 +30,467 @@ local function eq(a, b, msg)
 		error((msg or "esperado igual") .. ": " .. tostring(a) .. " ~= " .. tostring(b), 2)
 	end
 end
-local function near(a, b, tol, msg)
-	if math.abs(a - b) > (tol or 1e-6) then
-		error((msg or "esperado próximo") .. ": " .. tostring(a) .. " vs " .. tostring(b), 2)
-	end
-end
 local function truthy(v, msg)
 	if not v then
 		error(msg or "esperado verdadeiro", 2)
 	end
 end
 
--- horário fora de qualquer evento (início de período + 10 min)
-local T0 = 1793000000
-T0 = math.floor(T0 / EventConfig.Period) * EventConfig.Period + 600
-assert(EventConfig.at(T0) == nil)
+local DAY = 86400
+local NOW = 20000 * DAY + 3600 * 10 -- dia 20000, 10h UTC
 
-local seed = 7
-local function rng()
+-- gerador determinístico para os testes
+local seed = 42
+local function rand()
 	seed = (seed * 16807) % 2147483647
 	return seed / 2147483647
 end
-local function ctx(now, locked)
-	return { now = now or T0, rng = rng, locked = locked }
-end
-local function newProfile(now)
-	local p = ProfileSchema.new(now or T0)
-	ProfileOps.refreshPeriods(p, now or T0)
+
+local function fresh()
+	local p = ProfileSchema.new()
+	ProfileOps.ensureDaily(p, NOW)
 	return p
 end
-local function count(t)
-	local n = 0
-	for _ in pairs(t) do
-		n = n + 1
+
+local function find(list, id)
+	for _, x in ipairs(list) do
+		if x.id == id then
+			return x
+		end
 	end
-	return n
-end
-local function deepCopy(t)
-	if type(t) ~= "table" then
-		return t
-	end
-	local o = {}
-	for k, v in pairs(t) do
-		o[k] = deepCopy(v)
-	end
-	return o
-end
-local function give(p, speciesId, mutationId, now)
-	local ok, r = ProfileOps.buyFromConveyor(p, ctx(now), { speciesId = speciesId, mutationId = mutationId or "normal", price = 0 })
-	assert(ok, tostring(r))
-	return r.creature
 end
 
 print("== Lógica ==")
 
-test("conteúdo: 16 espécies, 6 mutações, ovos válidos", function()
-	eq(#GameConfig.Species, 16)
-	eq(#GameConfig.MutationOrder, 6)
-	for _, s in ipairs(GameConfig.Species) do
-		truthy(GameConfig.Rarities[s.rarity], "raridade de " .. s.id)
-		truthy(s.income > 0 and s.price > 0)
-	end
-	for _, id in ipairs(GameConfig.EggOrder) do
-		truthy(GameConfig.Eggs[id])
+test("4 máquinas com preços e níveis do design", function()
+	eq(#MachineDefinitions.List, 4)
+	local expected = { common = { 25, 1 }, neon = { 150, 5 }, golden = { 750, 15 }, mystery = { 3000, 30 } }
+	for id, e in pairs(expected) do
+		eq(MachineDefinitions.get(id).price, e[1], id .. " preço")
+		eq(MachineDefinitions.get(id).level, e[2], id .. " nível")
 	end
 end)
 
-test("chances de espécies e mutações somam 100% (com e sem sorte)", function()
-	for _, luck in ipairs({ 0, 0.25, 1, 5 }) do
-		local sp = Odds.speciesTable(GameConfig.Conveyor.RarityWeights, luck)
-		local mu = Odds.mutationTable(luck)
-		local a, b = 0, 0
-		for _, e in ipairs(sp) do
-			a = a + e.p
+test("20 objetos, ids únicos, 6 raridades, cada objeto na pool da sua máquina de origem", function()
+	eq(#ItemDefinitions.List, 20)
+	eq(#RarityConfig.Order, 6)
+	local seen = {}
+	for _, m in ipairs(MachineDefinitions.List) do
+		for _, entry in ipairs(m.pool) do
+			local item = ItemDefinitions.get(entry.item)
+			truthy(item, "item inexistente " .. entry.item)
+			eq(item.machine, m.id, entry.item .. " máquina de origem")
+			truthy(not seen[entry.item], "item repetido em pools")
+			seen[entry.item] = true
 		end
-		for _, e in ipairs(mu) do
-			b = b + e.p
-		end
-		near(a, 1, 1e-9)
-		near(b, 1, 1e-9)
+	end
+	for _, item in ipairs(ItemDefinitions.List) do
+		truthy(seen[item.id], item.id .. " fora de qualquer máquina")
+		truthy(RarityConfig.get(item.rarity), item.id .. " raridade")
+		truthy(item.value > 0)
+	end
+end)
+
+test("chances de cada máquina somam exatamente 100% e a tela mostra as mesmas", function()
+	for _, m in ipairs(MachineDefinitions.List) do
+		truthy(math.abs(Odds.total(m) - 100) < 1e-9, m.id .. " soma " .. Odds.total(m))
 		local shown = 0
-		for _, v in ipairs(Odds.displayPercents(sp, 2)) do
-			shown = shown + v
+		for _, row in ipairs(Odds.display(m.id)) do
+			shown = shown + row.chance
+			local entryChance
+			for _, e in ipairs(m.pool) do
+				if e.item == row.item then
+					entryChance = e.chance
+				end
+			end
+			truthy(math.abs(row.chance - entryChance) < 1e-9, "chance exibida difere da usada")
 		end
-		near(shown, 100, 1e-6, "exibição soma 100")
+		truthy(math.abs(shown - 100) < 1e-9)
 	end
 end)
 
-test("sorte aumenta raras e mutações, nunca muda comuns para cima", function()
-	local base = Odds.byRarity(Odds.speciesTable(GameConfig.Conveyor.RarityWeights, 0))
-	local lucky = Odds.byRarity(Odds.speciesTable(GameConfig.Conveyor.RarityWeights, 0.5))
-	truthy(lucky.Mythic > base.Mythic and lucky.Legendary > base.Legendary)
-	truthy(lucky.Common < base.Common)
-	local m0 = Odds.mutationTable(0)[1].p
-	local m1 = Odds.mutationTable(0.5)[1].p
-	truthy(m1 < m0, "normal fica menos provável")
-	-- sorte acima do teto é limitada
-	local capped = Odds.speciesTable(GameConfig.Conveyor.RarityWeights, 50)
-	local max = Odds.speciesTable(GameConfig.Conveyor.RarityWeights, GameConfig.Luck.Max)
-	near(capped[1].p, max[1].p, 1e-12)
-end)
-
-test("evento de mutação multiplica só a mutação dele", function()
-	local ev = EventConfig.force("chuva_dourada", T0, 60)
-	local withEv = Odds.mutationTable(0, ev)
-	EventConfig.override = nil
-	local without = Odds.mutationTable(0)
-	truthy(withEv[2].p > without[2].p * 3, "dourada bem mais comum")
-	near(withEv[2].weight, without[2].weight * 5, 1e-9)
-	eq(withEv[3].weight, without[3].weight)
-end)
-
-test("valor esperado dos ovos fica perto do preço (sem sorte)", function()
-	for _, id in ipairs(GameConfig.EggOrder) do
-		local egg = GameConfig.Eggs[id]
-		local ratio = Odds.expectedEggValue(egg, 0) / egg.price
-		truthy(ratio > 0.85 and ratio < 1.15, id .. " razão " .. ratio)
+test("sorteio: limites e distribuição em 200 mil aberturas seguem as chances", function()
+	local m = MachineDefinitions.get("mystery")
+	eq(Odds.pick(m, 0), "crystal_dragon")
+	eq(Odds.pick(m, 0.99999), "secret_artifact")
+	eq(Odds.pick(m, 0.995), "secret_artifact")
+	eq(Odds.pick(m, 0.9949), "galactic_star")
+	for _, id in ipairs({ "common", "mystery" }) do
+		local machine = MachineDefinitions.get(id)
+		local counts, n = {}, 200000
+		for _ = 1, n do
+			local item = Odds.pick(machine, rand())
+			counts[item] = (counts[item] or 0) + 1
+		end
+		for _, e in ipairs(machine.pool) do
+			local observed = (counts[e.item] or 0) * 100 / n
+			local tolerance = math.max(0.15, e.chance * 0.05)
+			truthy(math.abs(observed - e.chance) < tolerance, id .. "/" .. e.item .. " observado " .. observed .. " esperado " .. e.chance)
+		end
 	end
 end)
 
-test("sorteio real segue as chances (100 mil ovos)", function()
-	local sp = Odds.speciesTable(GameConfig.Eggs.basico.rarityWeights, 0)
-	local hits = {}
-	local n = 100000
-	for _ = 1, n do
-		local e = Odds.pick(sp, rng())
-		hits[e.rarity] = (hits[e.rarity] or 0) + 1
-	end
-	local exp = Odds.byRarity(sp)
-	for r, p in pairs(exp) do
-		near((hits[r] or 0) / n, p, 0.01, r)
+test("valor médio de venda fica entre 85% e 97% do preço (máquina não é fonte infinita de moedas)", function()
+	for _, m in ipairs(MachineDefinitions.List) do
+		local ratio = Odds.expectedValue(m) / m.price
+		truthy(ratio >= 0.85 and ratio <= 0.97, m.id .. " retorno " .. ratio)
 	end
 end)
 
-test("saldo inicial e base inicial", function()
-	local p = newProfile()
-	eq(p.coins, 300)
-	eq(ProfileSchema.slots(p), 8)
-	eq(count(p.creatures), 0)
-	eq(#p.missions.list, 3)
+test("níveis: curva, XP total e nível máximo", function()
+	eq(Levels.level(0), 1)
+	eq(Levels.totalFor(5), 350)
+	eq(Levels.level(349), 4)
+	eq(Levels.level(350), 5)
+	local l, into, need = Levels.fromXp(Levels.totalFor(15) + 10)
+	eq(l, 15)
+	eq(into, 10)
+	eq(need, Levels.xpToNext(15))
+	eq(Levels.level(10 ^ 9), EconomyConfig.Levels.MaxLevel)
 end)
 
-test("comprar na esteira cobra, ocupa pedestal e registra no índice", function()
-	local p = newProfile()
-	local ok, r = ProfileOps.buyFromConveyor(p, ctx(), { speciesId = "gosminha", mutationId = "dourada", price = 50 })
-	truthy(ok)
+test("perfil novo começa com 250 Coins e inventário vazio", function()
+	local p = fresh()
 	eq(p.coins, 250)
-	eq(r.creature.pad, 1)
-	truthy(r.isNew)
-	truthy(p.index["gosminha:dourada"])
-	eq(p.stats.conveyorBought, 1)
+	eq(ProfileOps.itemCount(p), 0)
+	eq(#p.daily.missions, 3)
 end)
 
-test("sem moedas ou sem vaga: nada muda", function()
-	local p = newProfile()
-	local before = deepCopy(p)
-	local ok, code = ProfileOps.buyFromConveyor(p, ctx(), { speciesId = "dragosma", mutationId = "normal", price = 13500 })
-	eq(ok, false)
-	eq(code, "insufficient_coins")
-	eq(p.coins, before.coins)
-	for _ = 1, 8 do
-		give(p, "gosminha")
+test("usar máquina: cobra o preço, entrega o objeto sorteado, registra descoberta e XP", function()
+	local p = fresh()
+	local r = ProfileOps.useMachine(p, "common", 0.1, NOW)
+	truthy(r.ok, r.message)
+	eq(r.itemId, "cup")
+	eq(p.coins, 225)
+	eq(p.inventory.cup, 1)
+	truthy(p.discovered.cup)
+	eq(r.isNew, true)
+	eq(r.xp, RarityConfig.get("common").xp + EconomyConfig.OpenXp)
+	eq(p.stats.opens, 1)
+	local r2 = ProfileOps.useMachine(p, "common", 0.1, NOW)
+	eq(r2.isNew, false)
+	eq(r2.xp, EconomyConfig.OpenXp)
+	eq(p.inventory.cup, 2)
+end)
+
+test("usar máquina: sem saldo, bloqueada por nível ou inventário cheio não altera nada", function()
+	local p = fresh()
+	p.coins = 24
+	local r = ProfileOps.useMachine(p, "common", 0.5, NOW)
+	eq(r.error, "coins")
+	eq(p.coins, 24)
+	eq(ProfileOps.itemCount(p), 0)
+	p.coins = 10000
+	eq(ProfileOps.useMachine(p, "neon", 0.5, NOW).error, "locked")
+	eq(ProfileOps.useMachine(p, "nope", 0.5, NOW).error, "unknown")
+	p.inventory.cup = ProfileOps.capacity(p)
+	eq(ProfileOps.useMachine(p, "common", 0.5, NOW).error, "full")
+	eq(p.coins, 10000)
+	p.xp = Levels.totalFor(5)
+	p.inventory.cup = 1
+	truthy(ProfileOps.useMachine(p, "neon", 0.5, NOW).ok, "neon liberada no nível 5")
+	eq(p.coins, 10000 - 150)
+end)
+
+test("XP por abertura tem limite diário (sem XP infinito repetindo)", function()
+	local p = fresh()
+	p.coins = 100000
+	p.upgrades.capacity = UpgradeConfig.max("capacity")
+	local before = p.xp
+	for _ = 1, 60 do
+		ProfileOps.useMachine(p, "common", 0.1, NOW)
 	end
-	p.coins = 1e6
-	local ok2, code2 = ProfileOps.hatchEgg(p, ctx(), "basico")
-	eq(ok2, false)
-	eq(code2, "base_full")
-	eq(p.coins, 1e6)
-	eq(count(p.creatures), 8)
+	local discoveryXp = RarityConfig.get("common").xp
+	eq(p.xp - before, discoveryXp + EconomyConfig.OpenXpDailyCap)
+	eq(p.daily.openXp, EconomyConfig.OpenXpDailyCap)
 end)
 
-test("ovo: cobra o preço, entrega 1 criatura, ovo lendário exige renascimento", function()
-	local p = newProfile()
-	p.coins = 1e6
-	local ok, r = ProfileOps.hatchEgg(p, ctx(), "raro")
-	truthy(ok)
-	eq(p.coins, 1e6 - 10000)
-	eq(count(p.creatures), 1)
-	truthy(GameConfig.SpeciesById[r.creature.s])
-	local ok2, code = ProfileOps.hatchEgg(p, ctx(), "lendario")
-	eq(ok2, false)
-	eq(code, "egg_locked")
-	p.rebirths = 1
-	truthy((ProfileOps.hatchEgg(p, ctx(), "lendario")))
-	local bad = ProfileOps.hatchEgg(p, ctx(), "inexistente")
-	eq(bad, false)
+test("subir de nível paga a recompensa uma única vez por nível", function()
+	local p = fresh()
+	local coins = p.coins
+	local g = ProfileOps.addXp(p, Levels.totalFor(3))
+	eq(#g.levels, 2)
+	eq(p.coins, coins + EconomyConfig.levelReward(2) + EconomyConfig.levelReward(3))
+	eq(p.levelRewarded, 3)
+	-- mesmo que o XP fosse reduzido e subisse de novo, o nível já pago não paga outra vez
+	p.xp = 0
+	local c2 = p.coins
+	ProfileOps.addXp(p, Levels.totalFor(3))
+	eq(p.coins, c2)
 end)
 
-test("produção por horário, limite do cofre e relógio voltando", function()
-	local p = newProfile()
-	local c = give(p, "bolhudo") -- 2/s
-	near(Income.pending(p, c, T0 + 100), 200, 1e-6)
-	near(Income.pending(p, c, T0 + 10 * 3600), 2 * 1800, 1e-6, "cofre de 30 min")
-	eq(Income.pending(p, c, T0 - 500), 0, "relógio para trás não gera moedas")
-	p.rebirths = 2
-	near(Income.pending(p, c, T0 + 100), 400, 1e-6, "renascimentos multiplicam renda")
+test("vender: valor do servidor, remove a cópia certa, não vende duas vezes", function()
+	local p = fresh()
+	p.inventory.cup = 1
+	local r = ProfileOps.sell(p, "cup", 1, false, NOW)
+	truthy(r.ok, r.message)
+	eq(r.coins, 10)
+	eq(p.coins, 260)
+	eq(p.inventory.cup, nil)
+	eq(ProfileOps.sell(p, "cup", 1, false, NOW).error, "missing")
+	eq(p.coins, 260)
+	eq(p.stats.sold, 1)
 end)
 
-test("coletar paga tudo de uma vez e zera os pedestais", function()
-	local p = newProfile()
-	give(p, "gosminha")
-	give(p, "bolhudo")
-	local ok, r = ProfileOps.collectAll(p, ctx(T0 + 60))
-	truthy(ok)
-	eq(r.coins, 180)
-	eq(p.coins, 300 + 180)
-	local ok2, code = ProfileOps.collectAll(p, ctx(T0 + 60))
-	eq(ok2, false)
-	eq(code, "nothing_to_collect")
-end)
-
-test("renda offline: volta depois de 8 horas e recebe só o cofre", function()
-	local p = newProfile()
-	give(p, "espinhoso") -- 7/s
-	p.upgrades.storage = 2 -- 30 + 60 min
-	local ok, r = ProfileOps.collectAll(p, ctx(T0 + 8 * 3600))
-	truthy(ok)
-	eq(r.coins, 7 * 5400)
-end)
-
-test("poção de renda e evento Renda em Dobro contam só no período certo", function()
-	local p = newProfile()
-	local c = give(p, "gosminha") -- 1/s
-	p.potions.renda = 1
-	truthy((ProfileOps.activatePotion(p, ctx(T0 + 100), "renda")))
-	-- 100 s normais + 100 s com ×1,5
-	near(Income.pending(p, c, T0 + 200), 100 + 150, 1e-6)
-	-- evento de renda: procura a próxima janela e mede dentro dela
-	local p2 = newProfile()
-	local c2 = give(p2, "gosminha")
-	local w
-	local t = T0
-	while not w do
-		local e = EventConfig.at(t)
-		if e and e.kind == "income" then
-			w = e
-		end
-		t = t + 60
+test("vender: quantidades inválidas, favoritos e itens raros sem confirmação são recusados", function()
+	local p = fresh()
+	p.inventory.ball = 3
+	p.inventory.teddy = 1
+	for _, bad in ipairs({ 0, -1, 1.5, 4, 0 / 0 }) do
+		truthy(not ProfileOps.sell(p, "ball", bad, false, NOW).ok, "quantidade " .. tostring(bad))
 	end
-	c2.since = w.startsAt
-	near(Income.pending(p2, c2, w.startsAt + 100), 200, 1e-6, "dobro durante o evento")
-	c2.since = w.endsAt
-	near(Income.pending(p2, c2, w.endsAt + 100), 100, 1e-6, "normal depois")
+	eq(ProfileOps.sell(p, "ball", "1", false, NOW).error, "amount")
+	eq(p.inventory.ball, 3)
+	ProfileOps.setFavorite(p, "ball", true)
+	eq(ProfileOps.sell(p, "ball", 1, false, NOW).error, "favorite")
+	local r = ProfileOps.sell(p, "teddy", 1, false, NOW)
+	eq(r.error, "confirm")
+	eq(r.needsConfirm, true)
+	eq(p.inventory.teddy, 1)
+	truthy(ProfileOps.sell(p, "teddy", 1, true, NOW).ok)
+	eq(p.coins, 250 + 70)
 end)
 
-test("vender: 50% do valor + guardado; valiosa exige confirmação; carregada não vende", function()
-	local p = newProfile()
-	local c = give(p, "olhudo", "dourada") -- valor 7200
-	local ok, r = ProfileOps.sell(p, ctx(T0 + 10), c.uid)
-	truthy(ok)
-	eq(r.coins, 3600)
-	eq(r.collected, 1100)
-	eq(p.coins, 300 + 3600 + 1100)
-	local leg = give(p, "rei_gosma")
-	local okL, codeL = ProfileOps.sell(p, ctx(), leg.uid)
-	eq(okL, false)
-	eq(codeL, "valuable_locked")
-	local okC, codeC = ProfileOps.sell(p, ctx(T0, { [leg.uid] = true }), leg.uid, true)
-	eq(okC, false)
-	eq(codeC, "being_stolen")
-	truthy((ProfileOps.sell(p, ctx(), leg.uid, true)))
-	eq(count(p.creatures), 0)
+test("vender repetidos: mantém 1 de cada, ignora raros, favoritos e expostos", function()
+	local p = fresh()
+	p.inventory = { cup = 4, ball = 2, toy_car = 3, teddy = 5, watch = 3 }
+	ProfileOps.setFavorite(p, "watch", true)
+	truthy(ProfileOps.display(p, "toy_car", 1, NOW).ok)
+	truthy(ProfileOps.display(p, "toy_car", 2, NOW).ok)
+	local r = ProfileOps.sellDuplicates(p, NOW)
+	truthy(r.ok, r.message)
+	eq(p.inventory.cup, 1)
+	eq(p.inventory.ball, 1)
+	eq(p.inventory.toy_car, 2, "duas expostas ficam")
+	eq(p.inventory.teddy, 5, "raro não é vendido")
+	eq(p.inventory.watch, 3, "favorito protegido")
+	eq(r.coins, 3 * 10 + 1 * 14 + 1 * 30)
+	eq(ProfileOps.sellDuplicates(p, NOW).error, "none")
 end)
 
-test("melhorias: custo crescente, efeito e nível máximo", function()
-	local p = newProfile()
-	p.coins = 1e12
-	local c1 = GameConfig.upgradeCost("slots", 0)
-	truthy((ProfileOps.buyUpgrade(p, ctx(), "slots")))
-	eq(ProfileSchema.slots(p), 10)
-	truthy(GameConfig.upgradeCost("slots", 1) > c1)
-	for _ = 2, GameConfig.Upgrades.slots.maxLevel do
-		truthy((ProfileOps.buyUpgrade(p, ctx(), "slots")))
+test("vitrine: não expõe mais cópias do que possui e itens expostos não podem ser vendidos", function()
+	local p = fresh()
+	p.inventory.teddy = 1
+	truthy(ProfileOps.display(p, "teddy", nil, NOW).ok)
+	eq(p.showcase[1], "teddy")
+	eq(ProfileOps.display(p, "teddy", 2, NOW).error, "noCopy")
+	eq(ProfileOps.sell(p, "teddy", 1, true, NOW).error, "displayed")
+	eq(ProfileOps.display(p, "cup", 1, NOW).error, "missing")
+	p.inventory.cup = 1
+	eq(ProfileOps.display(p, "cup", 3, NOW).error, "slot", "3º espaço exige melhoria")
+	truthy(ProfileOps.display(p, "cup", 2, NOW).ok)
+	eq(ProfileOps.display(p, "ball", nil, NOW).error, "missing")
+	p.inventory.ball = 1
+	eq(ProfileOps.display(p, "ball", nil, NOW).error, "full")
+	-- trocar o objeto de um espaço libera o anterior
+	truthy(ProfileOps.display(p, "ball", 1, NOW).ok)
+	truthy(ProfileOps.sell(p, "teddy", 1, true, NOW).ok)
+	truthy(ProfileOps.undisplay(p, 2).ok)
+	eq(ProfileOps.undisplay(p, 2).error, "empty")
+	eq(ProfileOps.undisplay(p, 99).error, "slot")
+end)
+
+test("melhorias: preço, efeito e nível máximo", function()
+	local p = fresh()
+	p.coins = 1000000
+	eq(ProfileOps.capacity(p), 40)
+	truthy(ProfileOps.buyUpgrade(p, "capacity").ok)
+	eq(ProfileOps.capacity(p), 60)
+	eq(p.coins, 1000000 - 200)
+	for _ = 1, 10 do
+		ProfileOps.buyUpgrade(p, "speed")
 	end
-	eq(ProfileSchema.slots(p), 20)
-	local ok, code = ProfileOps.buyUpgrade(p, ctx(), "slots")
-	eq(ok, false)
-	eq(code, "max_level")
-	truthy((ProfileOps.buyUpgrade(p, ctx(), "shield")))
-	eq(ProfileOps.shieldSeconds(p), 70)
-	truthy((ProfileOps.buyUpgrade(p, ctx(), "speed")))
-	eq(ProfileOps.walkSpeed(p, T0, false), 17)
-	eq(ProfileOps.walkSpeed(p, T0, true), 13)
+	eq(p.upgrades.speed, UpgradeConfig.max("speed"))
+	eq(ProfileOps.buyUpgrade(p, "speed").error, "max")
+	eq(UpgradeConfig.openDuration(p.upgrades.speed), 1.8)
+	truthy(ProfileOps.buyUpgrade(p, "showcase").ok)
+	eq(ProfileOps.showcaseSlots(p), 3)
+	truthy(ProfileOps.buyUpgrade(p, "missionBonus").ok)
+	eq(ProfileOps.rewardCoins(p, 100), 110)
+	eq(ProfileOps.buyUpgrade(p, "luck").error, "unknown")
+	local poor = fresh()
+	poor.coins = 10
+	eq(ProfileOps.buyUpgrade(poor, "capacity").error, "coins")
+	eq(poor.upgrades.capacity, 0)
 end)
 
-test("cofre maior não apaga nem duplica a produção guardada", function()
-	local p = newProfile()
-	p.coins = 1e9
-	local c = give(p, "gosminha")
-	local before = Income.pending(p, c, T0 + 5000) -- cheio: 1800
-	near(before, 1800, 1e-6)
-	truthy((ProfileOps.buyUpgrade(p, ctx(T0 + 5000), "storage")))
-	near(Income.pending(p, c, T0 + 5000), 1800, 1e-6)
-	near(Income.pending(p, c, T0 + 5100), 1900, 1e-6)
-end)
-
-test("poções: comprar com moedas, ativar, acumular até o máximo", function()
-	local p = newProfile()
-	p.coins = 1e6
-	truthy((ProfileOps.buyPotion(p, ctx(), "sorte")))
-	eq(p.potions.sorte, 1)
-	eq(p.coins, 1e6 - 20000)
-	truthy((ProfileOps.activatePotion(p, ctx(), "sorte")))
-	local luck = ProfileOps.luck(p, T0 + 10)
-	near(luck, 0.25, 1e-9)
-	p.potions.sorte = 10
-	for _ = 1, 5 do
-		ProfileOps.activatePotion(p, ctx(), "sorte")
+test("missões diárias: 3 por dia com 1 gratuita, progresso, resgate único e troca no dia seguinte", function()
+	local p = fresh()
+	local freeIds = {}
+	for _, d in ipairs(MissionDefinitions.DailyFree) do
+		freeIds[d.id] = true
 	end
-	eq(p.activePotions.sorte, T0 + 3600, "limite de 1 hora acumulada")
-	local ok, code = ProfileOps.activatePotion(p, ctx(), "sorte")
-	eq(ok, false)
-	eq(code, "potion_max")
-	local ok2, code2 = ProfileOps.activatePotion(p, ctx(), "velocidade")
-	eq(code2, "no_potion")
-end)
-
-test("roubo: entrega move a criatura, vítima recebe o que estava guardado", function()
-	local victim, thief = newProfile(), newProfile()
-	local c = give(victim, "dragosma", "diamante")
-	local okCan = ProfileOps.canSteal(victim, thief, c.uid, T0 + 30)
-	truthy(okCan)
-	local ok, r = ProfileOps.completeSteal(victim, thief, c.uid, T0 + 30)
-	truthy(ok)
-	eq(count(victim.creatures), 0)
-	eq(count(thief.creatures), 1)
-	eq(r.creature.s, "dragosma")
-	eq(r.creature.m, "diamante")
-	eq(victim.coins, 300 + 150 * 4 * 30, "vítima recebe a produção guardada")
-	eq(r.creature.since, T0 + 30, "ladrão começa do zero")
-	eq(thief.stats.stolen, 1)
-	eq(victim.stats.lostToThieves, 1)
-	truthy(thief.index["dragosma:diamante"])
-end)
-
-test("roubo: protegida por 3 min, base cheia ou criatura inexistente bloqueiam sem alterar", function()
-	local a, b = newProfile(), newProfile()
-	local c = give(a, "gosminha")
-	truthy((ProfileOps.completeSteal(a, b, c.uid, T0)))
-	local stolen
-	for _, x in pairs(b.creatures) do
-		stolen = x
-	end
-	local snapA, snapB = deepCopy(a), deepCopy(b)
-	local ok, code = ProfileOps.completeSteal(b, a, stolen.uid, T0 + 60)
-	eq(ok, false)
-	eq(code, "protected")
-	truthy((ProfileOps.canSteal(b, a, stolen.uid, T0 + 181)), "depois de 3 min pode")
-	for _ = 1, 8 do
-		give(a, "gosminha")
-	end
-	local ok2, code2 = ProfileOps.completeSteal(b, a, stolen.uid, T0 + 400)
-	eq(code2, "base_full")
-	eq(count(b.creatures), 1)
-	local ok3, code3 = ProfileOps.completeSteal(b, a, "c999", T0 + 400)
-	eq(code3, "invalid_creature")
-	eq(snapB.coins, b.coins)
-end)
-
-test("missões: progresso pelos eventos, resgate único e recompensa escala com a renda", function()
-	local p = newProfile()
-	local id = p.missions.list[1]
-	local def = ProgressConfig.MissionById[id]
-	local ok0, code0 = ProfileOps.claimMission(p, ctx(), id)
-	eq(code0, "not_ready")
-	ProfileOps.emit(p, T0, def.event, def.target)
-	for _ = 1, 4 do
-		give(p, "olhudo") -- 55/s cada
+	truthy(freeIds[p.daily.missions[1].id], "primeira missão é gratuita")
+	p.daily.missions[2] = { id = "d_open3", progress = 0, claimed = false }
+	eq(ProfileOps.claimDaily(p, "d_open3", NOW).error, "incomplete")
+	p.coins = 1000
+	for _ = 1, 3 do
+		ProfileOps.useMachine(p, "common", 0.1, NOW)
 	end
 	local coins = p.coins
-	local ok, r = ProfileOps.claimMission(p, ctx(), id)
-	truthy(ok)
-	local expected = math.max(def.reward.coins, math.floor(220 * 60 * def.reward.incomeMinutes))
-	eq(p.coins - coins, expected)
-	local ok2, code2 = ProfileOps.claimMission(p, ctx(), id)
-	eq(code2, "already_claimed")
-	local ok3, code3 = ProfileOps.claimMission(p, ctx(), "m_inexistente")
-	eq(code3, "invalid_mission")
-end)
-
-test("missões mudam por dia e são iguais para todos", function()
-	local d = TimeUtil.dayIndex(T0)
-	local a = ProfileOps.pickMissions(d)
-	local b = ProfileOps.pickMissions(d)
-	eq(table.concat(a, ","), table.concat(b, ","))
-	local p = newProfile()
-	ProfileOps.emit(p, T0, "hatch", 1)
-	ProfileOps.refreshPeriods(p, T0 + 86400)
-	eq(p.missions.day, d + 1)
-	eq(count(p.missions.progress), 0, "progresso zera no dia seguinte")
-end)
-
-test("presente diário: um por dia, sequência e recomeço", function()
-	local p = newProfile()
-	truthy((ProfileOps.claimGift(p, ctx())))
-	eq(p.gifts.streak, 1)
-	local ok, code = ProfileOps.claimGift(p, ctx(T0 + 60))
-	eq(code, "already_claimed")
-	truthy((ProfileOps.claimGift(p, ctx(T0 + 86400))))
-	eq(p.gifts.streak, 2)
-	eq(p.potions.velocidade, 1)
-	truthy((ProfileOps.claimGift(p, ctx(T0 + 86400 * 4))))
-	eq(p.gifts.streak, 1, "perdeu dias: recomeça")
-end)
-
-test("marcos do índice: só com combinações suficientes e uma vez", function()
-	local p = newProfile()
-	local ok, code = ProfileOps.claimMilestone(p, ctx(), "idx5")
-	eq(code, "not_ready")
-	for _, m in ipairs({ "normal", "dourada", "diamante", "radioativa", "vazio" }) do
-		give(p, "gosminha", m)
+	local r = ProfileOps.claimDaily(p, "d_open3", NOW)
+	truthy(r.ok, r.message)
+	eq(p.coins, coins + r.coins + (r.levelCoins or 0))
+	eq(ProfileOps.claimDaily(p, "d_open3", NOW).error, "claimed")
+	ProfileOps.ensureDaily(p, NOW + DAY)
+	eq(p.daily.day, 20001)
+	for _, m in ipairs(p.daily.missions) do
+		eq(m.claimed, false)
+		eq(m.progress, 0)
 	end
-	eq(ProfileOps.indexCount(p), 5)
-	truthy((ProfileOps.claimMilestone(p, ctx(), "idx5")))
-	eq(p.potions.sorte, 1)
-	local ok2, code2 = ProfileOps.claimMilestone(p, ctx(), "idx5")
-	eq(code2, "already_claimed")
 end)
 
-test("renascer: confirmação, custo, reinicia moedas/criaturas e mantém índice e melhorias", function()
-	local p = newProfile()
-	give(p, "rei_gosma")
-	p.upgrades.slots = 2
-	local cost = GameConfig.rebirthCost(1)
-	p.coins = cost - 1
-	local _, code = ProfileOps.rebirth(p, ctx(), "RENASCER")
-	eq(code, "rebirth_locked")
-	p.coins = cost
-	local _, code2 = ProfileOps.rebirth(p, ctx(), "renascer")
-	eq(code2, "confirmation_required")
-	local _, code3 = ProfileOps.rebirth(p, ctx(T0, { c1 = true }), "RENASCER")
-	eq(code3, "being_stolen")
-	truthy((ProfileOps.rebirth(p, ctx(), "RENASCER")))
-	eq(p.rebirths, 1)
-	eq(p.coins, 300)
-	eq(count(p.creatures), 0)
-	truthy(p.index["rei_gosma:normal"])
-	eq(p.upgrades.slots, 2)
-	near(Income.multiplier(p), 1.5, 1e-9)
-	near((ProfileOps.luck(p, T0)), 0.05, 1e-9)
-end)
-
-test("perfil corrompido é reparado (moedas, pedestais duplicados, criaturas inválidas)", function()
-	local p = newProfile()
-	give(p, "gosminha")
-	give(p, "bolhudo")
-	p.creatures.c2.pad = 1 -- pedestal duplicado
-	p.creatures.zz = { s = "nao_existe", m = "normal", pad = 3 }
-	p.coins = -50
-	p.upgrades.slots = 99
-	p.potions.sorte = "x"
-	local issues = ProfileSchema.validate(p, T0)
-	truthy(#issues >= 4)
-	eq(p.coins, 0)
-	eq(p.upgrades.slots, GameConfig.Upgrades.slots.maxLevel)
-	eq(p.creatures.zz, nil)
-	truthy(p.creatures.c1.pad ~= p.creatures.c2.pad)
-	eq(p.potions.sorte, 0)
-	local old = { coins = 10 }
-	ProfileSchema.migrate(old, T0)
-	truthy(type(old.creatures) == "table" and type(old.upgrades) == "table" and old.coins == 10)
-end)
-
-test("agenda de eventos é fixa, 6 min a cada 30 min, e alterna tipos", function()
-	local start = math.floor(T0 / EventConfig.Period) * EventConfig.Period
-	local e = EventConfig.at(start + 10)
-	truthy(e and e.endsAt == start + 360)
-	eq(EventConfig.at(start + 400), nil)
-	local n = EventConfig.nextEvent(start + 400)
-	eq(n.startsAt, start + 1800)
-	truthy(n.id ~= e.id)
-end)
-
-test("esteira: preço = preço da espécie × mutação", function()
-	local o = ProfileOps.rollConveyor(T0, 0.0001, 0.0001)
-	eq(o.speciesId, "gosminha")
-	eq(o.mutationId, "normal")
-	eq(o.price, 25)
-	local o2 = ProfileOps.rollConveyor(T0, 0.9999999, 0.9999999)
-	eq(o2.mutationId, "arcoiris")
-	eq(o2.price, GameConfig.SpeciesById[o2.speciesId].price * 20)
-end)
-
-test("mapa: 6 bases, 20 pedestais dentro da base, sem sobreposição", function()
-	eq(#MapConfig.Bases, 6)
-	for b = 1, 6 do
-		local seen = {}
-		for i = 1, 20 do
-			local x, z = MapConfig.padPosition(b, i)
-			eq(MapConfig.baseAt(x, z), b, "pedestal " .. i .. " da base " .. b)
-			local key = x .. "," .. z
-			truthy(not seen[key])
-			seen[key] = true
+test("missão 'descobrir objeto' não aparece para quem já descobriu tudo", function()
+	local p = fresh()
+	for _, item in ipairs(ItemDefinitions.List) do
+		p.discovered[item.id] = 1
+	end
+	for day = 20000, 20060 do
+		for _, id in ipairs(ProfileOps.dailySelection(p, day)) do
+			truthy(id ~= "d_discover", "dia " .. day)
 		end
-		local sx, sz = MapConfig.toWorld(b, MapConfig.Terminal.spawn.lx, MapConfig.Terminal.spawn.lz)
-		truthy(MapConfig.inDelivery(b, sx, sz))
 	end
-	eq(MapConfig.baseAt(0, 0), nil, "praça não é base")
 end)
 
-test("fotografia do cliente traz tudo e patrimônio sem dupla contagem", function()
-	local p = newProfile()
-	give(p, "olhudo")
-	local v = ClientView.build(p, T0 + 10, { name = "Ana", baseIndex = 2, shieldUntil = T0 + 50 })
-	eq(#v.creatures, 1)
-	eq(v.netWorth, 300 + 3600)
-	near(v.pending, 550, 1e-6)
-	eq(v.slots, 8)
-	eq(#v.upgrades, 4)
-	eq(#v.missions, 3)
-	eq(v.indexTotal, 96)
-	eq(v.baseIndex, 2)
-	ProfileOps.collectAll(p, ctx(T0 + 10))
-	eq(Income.netWorth(p), 300 + 550 + 3600, "coletar não muda o patrimônio além do que entrou")
+test("conquistas: só com a meta alcançada e uma única vez", function()
+	local p = fresh()
+	eq(ProfileOps.claimAchievement(p, "a_first").error, "incomplete")
+	ProfileOps.useMachine(p, "common", 0.1, NOW)
+	local r = ProfileOps.claimAchievement(p, "a_first")
+	truthy(r.ok)
+	eq(ProfileOps.claimAchievement(p, "a_first").error, "claimed")
+	eq(ProfileOps.claimAchievement(p, "zzz").error, "unknown")
+	p.stats.bestRank = 6
+	truthy(ProfileOps.claimAchievement(p, "a_secret").ok)
+	truthy(p.titles.secret_hunter)
+end)
+
+test("coleção: parte completa dá recompensa e título uma única vez; título só se desbloqueado", function()
+	local p = fresh()
+	eq(ProfileOps.setTitle(p, "starter").error, "locked")
+	eq(ProfileOps.claimSet(p, "set_common").error, "incomplete")
+	for _, id in ipairs({ "cup", "ball", "toy_car", "teddy", "headphones" }) do
+		p.discovered[id] = NOW
+	end
+	eq(ProfileOps.metric(p, "setsComplete"), 1)
+	local r = ProfileOps.claimSet(p, "set_common")
+	truthy(r.ok)
+	eq(r.title, "starter")
+	eq(ProfileOps.claimSet(p, "set_common").error, "claimed")
+	truthy(ProfileOps.setTitle(p, "starter").ok)
+	eq(p.title, "starter")
+	truthy(ProfileOps.setTitle(p, "").ok)
+	eq(ProfileOps.claimSet(p, "set_all").error, "incomplete")
+end)
+
+test("presente diário: uma vez por dia, sequência continua e recomeça se pular um dia", function()
+	local p = fresh()
+	local r = ProfileOps.claimGift(p, NOW)
+	truthy(r.ok)
+	eq(r.streak, 1)
+	eq(ProfileOps.claimGift(p, NOW + 60).error, "claimed")
+	eq(ProfileOps.claimGift(p, NOW + DAY).streak, 2)
+	eq(ProfileOps.claimGift(p, NOW + 2 * DAY).streak, 3)
+	eq(ProfileOps.claimGift(p, NOW + 4 * DAY).streak, 1, "pulou um dia")
+end)
+
+test("moedas perdidas: limite por hora que renova na hora seguinte", function()
+	local p = fresh()
+	for _ = 1, EconomyConfig.Pickups.hourlyLimit do
+		truthy(ProfileOps.pickup(p, NOW).ok)
+	end
+	eq(ProfileOps.pickup(p, NOW).error, "limit")
+	truthy(ProfileOps.pickup(p, NOW + 3600).ok)
+end)
+
+test("jogador sem saldo e sem objetos consegue voltar a jogar com atividades gratuitas", function()
+	local p = fresh()
+	p.coins = 0
+	truthy(not ProfileOps.useMachine(p, "common", 0.5, NOW).ok)
+	ProfileOps.claimGift(p, NOW)
+	for _ = 1, 3 do
+		ProfileOps.pickup(p, NOW)
+	end
+	truthy(p.coins >= MachineDefinitions.cheapestPrice(), "coins " .. p.coins)
+	truthy(ProfileOps.useMachine(p, "common", 0.5, NOW).ok)
+end)
+
+test("configurações: só chaves conhecidas e do tipo certo", function()
+	local p = fresh()
+	truthy(ProfileOps.setSetting(p, "autoSkip", true).ok)
+	eq(p.settings.autoSkip, true)
+	eq(ProfileOps.setSetting(p, "autoSkip", "sim").error, "invalid")
+	eq(ProfileOps.setSetting(p, "coins", 5).error, "invalid")
+end)
+
+test("reparo de perfil corrompido", function()
+	local bad = {
+		coins = -50,
+		xp = "abc",
+		inventory = { cup = "3", fake_item = 9, ball = -2, teddy = 1.7 },
+		favorites = { cup = true, fake = true },
+		discovered = { nope = 1 },
+		showcase = { "teddy", "teddy", "drone", 5 },
+		upgrades = { capacity = 99, speed = -3, hack = 1 },
+		stats = "x",
+		daily = { day = 5, missions = { { id = "fake" } } },
+		titles = { legend = true, fake = true },
+		title = "fake",
+		settings = { sound = "yes", extra = 1 },
+	}
+	local p, fixes = ProfileSchema.reconcile(bad)
+	truthy(#fixes > 0)
+	eq(p.coins, 0)
+	eq(p.xp, 0)
+	eq(p.inventory.cup, 3)
+	eq(p.inventory.fake_item, nil)
+	eq(p.inventory.ball, nil)
+	eq(p.inventory.teddy, 1)
+	truthy(p.discovered.cup and p.discovered.teddy, "possuídos contam como descobertos")
+	eq(p.discovered.nope, nil)
+	eq(p.showcase[1], "teddy")
+	eq(p.showcase[2], "", "só 1 urso possuído")
+	eq(p.showcase[3], "")
+	eq(#p.showcase, UpgradeConfig.MaxShowcaseSlots)
+	eq(p.upgrades.capacity, UpgradeConfig.max("capacity"))
+	eq(p.upgrades.speed, 0)
+	eq(p.upgrades.hack, nil)
+	eq(p.stats.opens, 0)
+	eq(p.daily.day, -1)
+	eq(p.titles.fake, nil)
+	eq(p.title, "")
+	eq(p.settings.sound, true)
+	eq(p.settings.extra, nil)
+	local p2 = ProfileSchema.reconcile("lixo")
+	eq(p2.coins, 250)
+end)
+
+test("fotografia do cliente traz HUD, missões, coleção e presentes calculados", function()
+	local p = fresh()
+	ProfileOps.useMachine(p, "common", 0.1, NOW)
+	local v = ClientView.build(p, NOW)
+	eq(v.coins, 225)
+	eq(v.level, 1)
+	eq(v.discoveredCount, 1)
+	eq(v.totalItems, 20)
+	eq(#v.daily, 3)
+	eq(#v.achievements, #MissionDefinitions.Achievements)
+	eq(#v.sets, #MissionDefinitions.CollectionSets)
+	eq(find(v.sets, "set_common").have, 1)
+	eq(v.gift.canClaim, true)
+	eq(v.capacity, 40)
+	eq(v.openDuration, UpgradeConfig.openDuration(0))
+end)
+
+test("formatação de números e porcentagens", function()
+	eq(Format.int(1234567), "1.234.567")
+	eq(Format.int(25), "25")
+	eq(Format.short(1500), "1.500")
+	eq(Format.short(25000), "25 mil")
+	eq(Format.short(2500000), "2,5 mi")
+	eq(Format.percent(45), "45%")
+	eq(Format.percent(0.5), "0,5%")
+	eq(Format.percent(7.5), "7,5%")
 end)
 
 print(string.format("\n%d passaram, %d falharam", passed, failed))

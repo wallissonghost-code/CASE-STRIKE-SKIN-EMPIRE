@@ -1,223 +1,389 @@
--- MapService: constrói o mapa inteiro por código (sem modelos ou texturas externas):
--- chão, praça, esteira da fábrica, quiosques de ovos, loja de poções, placa de eventos,
--- 6 bases com pedestais, terminais (coletar / travar base) e as barreiras de laser.
+-- Constrói o parque (lobby compacto) por código ao iniciar o servidor:
+-- praça central com spawn, 4 máquinas físicas ao norte, loja de melhorias a leste, painel de
+-- ranking a oeste, galeria de vitrines ao sul, árvores, postes, caminhos e uma área "em breve".
+-- Guarda as posições usadas pelos outros serviços (máquinas, vitrines, moedas, pontos de teleporte).
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Lighting = game:GetService("Lighting")
 
-local Shared = ReplicatedStorage.Shared
-local GameConfig = require(Shared.Config.GameConfig)
-local MapConfig = require(Shared.Config.MapConfig)
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local MachineDefinitions = require(Shared.MachineDefinitions)
+local UpgradeConfig = require(Shared.UpgradeConfig)
+local Format = require(Shared.Util.Format)
 
 local MapService = {}
 
-MapService.world = nil
-MapService.bases = {} -- [index] = { folder, pads = {}, laser = {}, sign, collectPrompt, shieldPrompt }
-MapService.eventLabel = nil
+MapService.machines = {} -- [machineId] = { model, button, position, trayPoint }
+MapService.booths = {} -- { { model, slots = { {pedestal, anchor} }, sign, position } }
+MapService.pickupSpots = {}
+MapService.points = {}
+MapService.rankingBoard = nil -- Frame dentro do SurfaceGui do painel
 
-local function rgb(t)
-	return Color3.fromRGB(t[1], t[2], t[3])
+local world
+
+local function C(r, g, b)
+	return Color3.fromRGB(r, g, b)
 end
 
 local function part(parent, props)
-	local p = Instance.new("Part")
+	local p = Instance.new(props.class or "Part")
 	p.Anchored = true
 	p.TopSurface = Enum.SurfaceType.Smooth
 	p.BottomSurface = Enum.SurfaceType.Smooth
-	p.Material = Enum.Material.SmoothPlastic
+	p.Material = props.material or Enum.Material.SmoothPlastic
 	for k, v in pairs(props) do
-		p[k] = v
+		if k ~= "class" and k ~= "material" then
+			p[k] = v
+		end
 	end
 	p.Parent = parent
 	return p
 end
 
--- placa com texto (BillboardGui sempre virado para a câmera)
-function MapService.billboard(adornee, text, size, offsetY, color)
-	local gui = Instance.new("BillboardGui")
-	gui.Name = "Label"
-	gui.Size = size or UDim2.fromOffset(220, 60)
-	gui.StudsOffset = Vector3.new(0, offsetY or 4, 0)
-	gui.AlwaysOnTop = false
-	gui.MaxDistance = 140
-	gui.Adornee = adornee
-	local label = Instance.new("TextLabel")
-	label.Name = "Text"
-	label.BackgroundTransparency = 1
-	label.Size = UDim2.fromScale(1, 1)
-	label.Font = Enum.Font.FredokaOne
-	label.TextScaled = true
-	label.RichText = true
-	label.TextColor3 = color or Color3.new(1, 1, 1)
-	label.TextStrokeTransparency = 0.2
-	label.Text = text
-	label.Parent = gui
-	gui.Parent = adornee
-	return label
+local function folder(parent, name)
+	local f = Instance.new("Folder")
+	f.Name = name
+	f.Parent = parent
+	return f
 end
 
-local function prompt(parent, actionText, objectText, opts)
-	opts = opts or {}
-	local p = Instance.new("ProximityPrompt")
-	p.ActionText = actionText
-	p.ObjectText = objectText or ""
-	p.HoldDuration = opts.hold or 0
-	p.MaxActivationDistance = opts.distance or 10
-	p.RequiresLineOfSight = false
-	p.KeyboardKeyCode = Enum.KeyCode.E
-	for k, v in pairs(opts.attributes or {}) do
-		p:SetAttribute(k, v)
+local function label(parent, text, props)
+	local l = Instance.new("TextLabel")
+	l.BackgroundTransparency = 1
+	l.Size = UDim2.new(1, 0, 1, 0)
+	l.Font = Enum.Font.FredokaOne
+	l.TextScaled = true
+	l.TextColor3 = C(255, 255, 255)
+	l.TextStrokeTransparency = 0.4
+	l.Text = text
+	for k, v in pairs(props or {}) do
+		l[k] = v
 	end
-	p.Parent = parent
-	return p
-end
-MapService.prompt = prompt
-
-local function buildPlaza(world)
-	part(world, { Name = "Ground", Size = Vector3.new(MapConfig.GroundSize, 2, MapConfig.GroundSize), Position = Vector3.new(0, -1, 0), Color = Color3.fromRGB(96, 178, 74), Material = Enum.Material.Grass })
-	local spawn = Instance.new("SpawnLocation")
-	spawn.Name = "PlazaSpawn"
-	spawn.Anchored = true
-	spawn.Size = Vector3.new(12, 1, 12)
-	spawn.Position = Vector3.new(0, 0.5, 30)
-	spawn.Color = Color3.fromRGB(120, 255, 90)
-	spawn.Material = Enum.Material.Neon
-	spawn.Neutral = true
-	spawn.Parent = world
-	part(world, { Name = "Plaza", Size = Vector3.new(170, 0.4, 90), Position = Vector3.new(0, 0.2, 0), Color = Color3.fromRGB(200, 196, 186), Material = Enum.Material.Concrete })
-	-- caminhos até as bases
-	for _, b in ipairs(MapConfig.Bases) do
-		local len = math.abs(b.z) - MapConfig.BaseSize / 2 - 45
-		part(world, { Name = "Path", Size = Vector3.new(14, 0.3, len), Position = Vector3.new(b.x, 0.15, b.facing * -(45 + len / 2)), Color = Color3.fromRGB(214, 200, 160), Material = Enum.Material.Sand })
-	end
-	part(world, { Name = "Road", Size = Vector3.new(260, 0.3, 14), Position = Vector3.new(0, 0.15, -50), Color = Color3.fromRGB(214, 200, 160), Material = Enum.Material.Sand })
-	part(world, { Name = "Road", Size = Vector3.new(260, 0.3, 14), Position = Vector3.new(0, 0.15, 50), Color = Color3.fromRGB(214, 200, 160), Material = Enum.Material.Sand })
-	-- cerca
-	local f = MapConfig.Fence
-	for _, w in ipairs({ { 0, -f, f * 2, 1 }, { 0, f, f * 2, 1 }, { -f, 0, 1, f * 2 }, { f, 0, 1, f * 2 } }) do
-		part(world, { Name = "Fence", Size = Vector3.new(w[3], 6, w[4]), Position = Vector3.new(w[1], 3, w[2]), Color = Color3.fromRGB(240, 230, 210), Material = Enum.Material.WoodPlanks })
-	end
-	-- árvores de enfeite nos cantos
-	for _, t in ipairs({ { -185, -185 }, { 185, -185 }, { -185, 185 }, { 185, 185 }, { -185, 0 }, { 185, 0 }, { -60, -185 }, { 60, 185 } }) do
-		part(world, { Name = "Trunk", Size = Vector3.new(2, 8, 2), Position = Vector3.new(t[1], 4, t[2]), Color = Color3.fromRGB(110, 75, 40), Material = Enum.Material.Wood })
-		part(world, { Name = "Leaves", Shape = Enum.PartType.Ball, Size = Vector3.new(11, 11, 11), Position = Vector3.new(t[1], 11, t[2]), Color = Color3.fromRGB(60, 150, 70), Material = Enum.Material.Grass })
-	end
+	l.Parent = parent
+	return l
 end
 
-local function buildConveyor(world)
-	local c = MapConfig.Conveyor
-	local len = c.endX - c.startX
-	local belt = part(world, { Name = "ConveyorBelt", Size = Vector3.new(len + 8, 1.2, c.width), Position = Vector3.new((c.startX + c.endX) / 2, 0.8, c.z), Color = Color3.fromRGB(45, 48, 60), Material = Enum.Material.DiamondPlate })
-	for x = c.startX, c.endX, 8 do
-		part(world, { Name = "Arrow", Size = Vector3.new(3, 0.1, 1), Position = Vector3.new(x, 1.45, c.z), Color = Color3.fromRGB(255, 200, 60), Material = Enum.Material.Neon, CanCollide = false })
-	end
-	for _, side in ipairs({ -1, 1 }) do
-		part(world, { Name = "Rail", Size = Vector3.new(len + 8, 1.6, 0.8), Position = Vector3.new((c.startX + c.endX) / 2, 1.6, c.z + side * (c.width / 2 + 0.4)), Color = Color3.fromRGB(255, 170, 40), Material = Enum.Material.Metal })
-	end
-	-- máquina da fábrica no início da esteira
-	local machine = part(world, { Name = "FactoryMachine", Size = Vector3.new(16, 18, 18), Position = Vector3.new(c.startX - 12, 9, c.z), Color = Color3.fromRGB(70, 80, 110), Material = Enum.Material.Metal })
-	part(world, { Name = "FactoryPipe", Shape = Enum.PartType.Cylinder, Size = Vector3.new(10, 4, 4), Position = Vector3.new(c.startX - 12, 22, c.z - 4), Orientation = Vector3.new(0, 0, 90), Color = Color3.fromRGB(120, 255, 90), Material = Enum.Material.Neon })
-	part(world, { Name = "FactoryHatch", Size = Vector3.new(1, 8, 9), Position = Vector3.new(c.startX - 3.6, 5, c.z), Color = Color3.fromRGB(120, 255, 90), Material = Enum.Material.Neon })
-	MapService.billboard(machine, "🧪 MUTANT FACTORY", UDim2.fromOffset(420, 80), 14, Color3.fromRGB(150, 255, 110))
-	-- recolhedor no final
-	part(world, { Name = "Recycler", Size = Vector3.new(10, 12, 14), Position = Vector3.new(c.endX + 9, 6, c.z), Color = Color3.fromRGB(90, 60, 60), Material = Enum.Material.Metal })
-	return belt
+local function surface(partInstance, face, pixelsPerStud)
+	local gui = Instance.new("SurfaceGui")
+	gui.Face = face or Enum.NormalId.Front
+	gui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+	gui.PixelsPerStud = pixelsPerStud or 40
+	gui.LightInfluence = 0
+	gui.Parent = partInstance
+	return gui
 end
 
-local function buildKiosks(world)
-	for _, id in ipairs(GameConfig.EggOrder) do
-		local egg = GameConfig.Eggs[id]
-		local k = MapConfig.EggKiosks[id]
-		local stand = part(world, { Name = "EggKiosk_" .. id, Size = Vector3.new(10, 3, 10), Position = Vector3.new(k.x, 1.5, k.z), Color = Color3.fromRGB(60, 64, 84), Material = Enum.Material.Metal })
-		local eggPart = part(world, { Name = "Egg_" .. id, Shape = Enum.PartType.Ball, Size = Vector3.new(5, 6.5, 5), Position = Vector3.new(k.x, 6.4, k.z), Color = rgb(egg.color), Material = Enum.Material.SmoothPlastic })
-		MapService.billboard(eggPart, egg.name .. "\n<font color='#FFD84A'>$ " .. tostring(egg.price) .. "</font>", UDim2.fromOffset(220, 70), 6)
-		prompt(stand, "Abrir", egg.name, { distance = 12, attributes = { Panel = "Eggs", EggId = id } })
+local function prompt(parentPart, actionText, objectText, attrs)
+	local pr = Instance.new("ProximityPrompt")
+	pr.ActionText = actionText
+	pr.ObjectText = objectText
+	pr.HoldDuration = 0
+	pr.MaxActivationDistance = 12
+	pr.RequiresLineOfSight = false
+	pr.KeyboardKeyCode = Enum.KeyCode.E
+	for k, v in pairs(attrs or {}) do
+		pr:SetAttribute(k, v)
 	end
-	local ps = MapConfig.PotionShop
-	local shop = part(world, { Name = "PotionShop", Size = Vector3.new(12, 6, 8), Position = Vector3.new(ps.x, 3, ps.z), Color = Color3.fromRGB(120, 60, 170), Material = Enum.Material.WoodPlanks })
-	part(world, { Name = "PotionBottle", Shape = Enum.PartType.Ball, Size = Vector3.new(3, 3, 3), Position = Vector3.new(ps.x, 7.6, ps.z), Color = Color3.fromRGB(120, 255, 120), Material = Enum.Material.Neon })
-	MapService.billboard(shop, "🧪 POÇÕES", UDim2.fromOffset(200, 50), 7)
-	prompt(shop, "Ver poções", "Loja de Poções", { distance = 12, attributes = { Panel = "Potions" } })
-
-	local eb = MapConfig.EventBoard
-	local board = part(world, { Name = "EventBoard", Size = Vector3.new(16, 9, 1), Position = Vector3.new(eb.x, 7, eb.z), Color = Color3.fromRGB(30, 34, 50) })
-	part(world, { Name = "EventBoardPost", Size = Vector3.new(1, 4, 1), Position = Vector3.new(eb.x, 1.5, eb.z), Color = Color3.fromRGB(60, 60, 70) })
-	MapService.eventLabel = MapService.billboard(board, "Eventos", UDim2.fromOffset(360, 110), 0)
-	MapService.eventLabel.Parent.AlwaysOnTop = false
+	pr.Parent = parentPart
+	return pr
 end
 
-local function buildBase(world, index)
-	local b = MapConfig.Bases[index]
-	local color = rgb(MapConfig.BaseColors[index])
-	local folder = Instance.new("Folder")
-	folder.Name = "Base" .. index
-	folder.Parent = world
-	local size = MapConfig.BaseSize
-	part(folder, { Name = "Floor", Size = Vector3.new(size, 1, size), Position = Vector3.new(b.x, 0.5, b.z), Color = Color3.fromRGB(70, 74, 92), Material = Enum.Material.Slate })
-	part(folder, { Name = "Rim", Size = Vector3.new(size + 2, 0.6, size + 2), Position = Vector3.new(b.x, 0.3, b.z), Color = color, Material = Enum.Material.Neon })
-	-- paredes (fundo e laterais) e entrada voltada para a praça
-	local wallColor = color:Lerp(Color3.fromRGB(40, 40, 50), 0.55)
-	part(folder, { Name = "WallBack", Size = Vector3.new(size, 10, 2), Position = Vector3.new(b.x, 5.5, b.z - b.facing * size / 2), Color = wallColor })
-	part(folder, { Name = "WallLeft", Size = Vector3.new(2, 10, size), Position = Vector3.new(b.x - size / 2, 5.5, b.z), Color = wallColor })
-	part(folder, { Name = "WallRight", Size = Vector3.new(2, 10, size), Position = Vector3.new(b.x + size / 2, 5.5, b.z), Color = wallColor })
-	local frontZ = b.z + b.facing * size / 2
-	part(folder, { Name = "WallFrontL", Size = Vector3.new(size / 2 - 9, 10, 2), Position = Vector3.new(b.x - size / 4 - 4.5, 5.5, frontZ), Color = wallColor })
-	part(folder, { Name = "WallFrontR", Size = Vector3.new(size / 2 - 9, 10, 2), Position = Vector3.new(b.x + size / 4 + 4.5, 5.5, frontZ), Color = wallColor })
-	-- laser da entrada (aparece com o escudo ligado)
-	local laser = {}
-	for i = 0, 3 do
-		table.insert(laser, part(folder, { Name = "Laser", Size = Vector3.new(18, 0.4, 0.4), Position = Vector3.new(b.x, 1.5 + i * 2.2, frontZ), Color = Color3.fromRGB(255, 50, 60), Material = Enum.Material.Neon, CanCollide = false, Transparency = 1 }))
+---------------------------------------------------------------------------
+-- máquina
+---------------------------------------------------------------------------
+local function buildMachine(parent, def, origin)
+	local model = Instance.new("Model")
+	model.Name = "Machine_" .. def.id
+	model:SetAttribute("MachineId", def.id)
+	local function at(x, y, z)
+		return origin * CFrame.new(x, y, z)
 	end
-	-- placa do dono
-	local signPost = part(folder, { Name = "OwnerSign", Size = Vector3.new(20, 5, 1), Position = Vector3.new(b.x, 14, frontZ), Color = color })
-	local sign = MapService.billboard(signPost, "Base livre", UDim2.fromOffset(320, 70), 2)
-	-- pedestais
-	local pads = {}
-	for i = 1, GameConfig.Base.MaxSlotsShown do
-		local x, z = MapConfig.padPosition(index, i)
-		pads[i] = part(folder, { Name = "Pad" .. i, Size = Vector3.new(8, 1, 8), Position = Vector3.new(x, 1.3, z), Color = Color3.fromRGB(45, 48, 62), Material = Enum.Material.Metal, Transparency = 0.6 })
+	part(model, { Name = "Base", Size = Vector3.new(7.5, 1, 6.5), CFrame = at(0, 0.5, 0), Color = C(40, 40, 50) })
+	local body = part(model, { Name = "Body", Size = Vector3.new(6.4, 9, 5), CFrame = at(0, 5.5, 0), Color = def.bodyColor })
+	model.PrimaryPart = body
+	part(model, { Name = "Top", Size = Vector3.new(7, 1.4, 5.6), CFrame = at(0, 10.7, 0), Color = def.accentColor })
+	part(model, { Name = "TopDome", Size = Vector3.new(4.5, 4.5, 4.5), CFrame = at(0, 11.4, 0), Color = def.accentColor, Shape = Enum.PartType.Ball, material = Enum.Material.Glass, Transparency = 0.35 })
+	-- visor transparente com cápsulas dentro
+	part(model, { Name = "VisorBack", Size = Vector3.new(4.8, 4.4, 0.3), CFrame = at(0, 7, 1.2), Color = C(25, 25, 35) })
+	part(model, { Name = "Visor", Size = Vector3.new(5, 4.6, 0.25), CFrame = at(0, 7, 2.6), Color = C(200, 235, 255), material = Enum.Material.Glass, Transparency = 0.55 })
+	part(model, { Name = "VisorFrame", Size = Vector3.new(5.4, 0.35, 0.4), CFrame = at(0, 9.4, 2.55), Color = def.accentColor })
+	part(model, { Name = "VisorFrame", Size = Vector3.new(5.4, 0.35, 0.4), CFrame = at(0, 4.6, 2.55), Color = def.accentColor })
+	local capsules = folder(model, "Capsules")
+	local capsuleColors = { C(255, 90, 90), C(90, 200, 255), C(255, 220, 70), C(140, 255, 120), C(220, 120, 255), C(255, 160, 60) }
+	for i = 1, 6 do
+		local col = (i - 1) % 3
+		local row = math.floor((i - 1) / 3)
+		part(capsules, {
+			Name = "Capsule",
+			Shape = Enum.PartType.Ball,
+			Size = Vector3.new(1.1, 1.1, 1.1),
+			CFrame = at(-1.4 + col * 1.4, 6.1 + row * 1.6, 1.95),
+			Color = capsuleColors[i],
+			CanCollide = false,
+		})
 	end
-	-- terminais
-	local cx, cz = MapConfig.toWorld(index, MapConfig.Terminal.collect.lx, MapConfig.Terminal.collect.lz)
-	local collect = part(folder, { Name = "CollectTerminal", Size = Vector3.new(6, 4, 3), Position = Vector3.new(cx, 3, cz), Color = Color3.fromRGB(255, 200, 60), Material = Enum.Material.Neon })
-	MapService.billboard(collect, "💰 COLETAR", UDim2.fromOffset(160, 40), 4)
-	local sx, sz = MapConfig.toWorld(index, MapConfig.Terminal.shield.lx, MapConfig.Terminal.shield.lz)
-	local shield = part(folder, { Name = "ShieldTerminal", Size = Vector3.new(6, 4, 3), Position = Vector3.new(sx, 3, sz), Color = Color3.fromRGB(80, 170, 255), Material = Enum.Material.Neon })
-	local shieldLabel = MapService.billboard(shield, "🛡️ TRAVAR BASE", UDim2.fromOffset(200, 40), 4)
-	local spx, spz = MapConfig.toWorld(index, MapConfig.Terminal.spawn.lx, MapConfig.Terminal.spawn.lz)
-	MapService.bases[index] = {
-		folder = folder,
-		pads = pads,
-		laser = laser,
-		sign = sign,
-		shieldLabel = shieldLabel,
-		collectPrompt = prompt(collect, "Coletar tudo", "Sua base", { distance = 12, attributes = { OwnerOnly = true, BaseIndex = index, Action = "collect" } }),
-		shieldPrompt = prompt(shield, "Travar base", "Escudo", { distance = 12, attributes = { OwnerOnly = true, BaseIndex = index, Action = "shield" } }),
-		spawn = Vector3.new(spx, 4, spz),
-		color = color,
-	}
+	local light = Instance.new("PointLight")
+	light.Name = "VisorLight"
+	light.Color = def.lightColor
+	light.Range = 10
+	light.Brightness = 1
+	light.Parent = model:FindFirstChild("VisorBack")
+	-- compartimento de entrega
+	part(model, { Name = "Tray", Size = Vector3.new(3.4, 1.8, 1.6), CFrame = at(-0.6, 2.4, 2.6), Color = C(20, 20, 25) })
+	part(model, { Name = "TrayLip", Size = Vector3.new(3.6, 0.3, 0.4), CFrame = at(-0.6, 1.4, 3.3), Color = def.accentColor })
+	local trayPoint = part(model, { Name = "TrayPoint", Size = Vector3.new(0.5, 0.5, 0.5), CFrame = at(-0.6, 3.0, 4.2), Transparency = 1, CanCollide = false, CanQuery = false })
+	-- botão de interação
+	local button = part(model, {
+		Name = "Button",
+		Shape = Enum.PartType.Cylinder,
+		Size = Vector3.new(0.5, 1.3, 1.3),
+		CFrame = at(2.1, 3.0, 2.65) * CFrame.Angles(0, math.rad(90), 0),
+		Color = C(255, 60, 60),
+		material = Enum.Material.Neon,
+	})
+	part(model, { Name = "ButtonRing", Size = Vector3.new(1.7, 1.7, 0.3), CFrame = at(2.1, 3.0, 2.55), Color = C(240, 240, 240) })
+	prompt(button, "Usar máquina", def.name, { MachineId = def.id })
+	-- luzes
+	local lights = folder(model, "Lights")
+	for i = 0, 6 do
+		part(lights, { Name = "Light", Shape = Enum.PartType.Ball, Size = Vector3.new(0.5, 0.5, 0.5), CFrame = at(-3 + i, 10.2, 2.85), Color = def.lightColor, material = Enum.Material.Neon, CanCollide = false })
+	end
+	for i = 0, 4 do
+		part(lights, { Name = "Light", Shape = Enum.PartType.Ball, Size = Vector3.new(0.45, 0.45, 0.45), CFrame = at(-3.25, 2 + i * 1.8, 2.55), Color = def.lightColor, material = Enum.Material.Neon, CanCollide = false })
+		part(lights, { Name = "Light", Shape = Enum.PartType.Ball, Size = Vector3.new(0.45, 0.45, 0.45), CFrame = at(3.25, 2 + i * 1.8, 2.55), Color = def.lightColor, material = Enum.Material.Neon, CanCollide = false })
+	end
+	-- placa com nome, preço e nível
+	local sign = part(model, { Name = "Sign", Size = Vector3.new(7, 2.2, 0.3), CFrame = at(0, 14.6, 0.5), Color = C(30, 30, 40) })
+	local gui = surface(sign, Enum.NormalId.Front, 30)
+	label(gui, def.name, { Size = UDim2.new(1, 0, 0.6, 0) })
+	label(gui, "💰 " .. Format.int(def.price) .. " Coins  •  Nível " .. def.level .. "+", {
+		Size = UDim2.new(1, 0, 0.4, 0),
+		Position = UDim2.new(0, 0, 0.6, 0),
+		TextColor3 = C(255, 230, 120),
+	})
+	model.Parent = parent
+	return model, button, trayPoint
 end
 
-function MapService.init()
-	local world = Instance.new("Folder")
-	world.Name = "MutantWorld"
-	buildPlaza(world)
-	MapService.belt = buildConveyor(world)
-	buildKiosks(world)
-	for i = 1, #MapConfig.Bases do
-		buildBase(world, i)
+---------------------------------------------------------------------------
+-- decoração
+---------------------------------------------------------------------------
+local function tree(parent, x, z, scale)
+	scale = scale or 1
+	part(parent, { Name = "Trunk", Shape = Enum.PartType.Cylinder, Size = Vector3.new(5 * scale, 1.4 * scale, 1.4 * scale), CFrame = CFrame.new(x, 2.5 * scale, z) * CFrame.Angles(0, 0, math.rad(90)), Color = C(120, 80, 50), material = Enum.Material.Wood })
+	part(parent, { Name = "Leaves", Shape = Enum.PartType.Ball, Size = Vector3.new(6, 6, 6) * scale, CFrame = CFrame.new(x, 6.5 * scale, z), Color = C(70, 175, 80), material = Enum.Material.Grass, CanCollide = false })
+	part(parent, { Name = "Leaves", Shape = Enum.PartType.Ball, Size = Vector3.new(4, 4, 4) * scale, CFrame = CFrame.new(x + 1.2 * scale, 8.6 * scale, z - 0.6 * scale), Color = C(95, 200, 95), material = Enum.Material.Grass, CanCollide = false })
+end
+
+local function lamp(parent, x, z, color)
+	part(parent, { Name = "Pole", Size = Vector3.new(0.5, 8, 0.5), CFrame = CFrame.new(x, 4, z), Color = C(50, 50, 60), material = Enum.Material.Metal })
+	local bulb = part(parent, { Name = "Bulb", Shape = Enum.PartType.Ball, Size = Vector3.new(1.4, 1.4, 1.4), CFrame = CFrame.new(x, 8.4, z), Color = color or C(255, 240, 180), material = Enum.Material.Neon, CanCollide = false })
+	local light = Instance.new("PointLight")
+	light.Range = 14
+	light.Brightness = 0.8
+	light.Color = color or C(255, 240, 180)
+	light.Parent = bulb
+end
+
+local function path(parent, from, to, width)
+	local mid = (from + to) / 2
+	local delta = to - from
+	local length = delta.Magnitude
+	local size
+	if math.abs(delta.X) > math.abs(delta.Z) then
+		size = Vector3.new(length, 0.2, width)
+	else
+		size = Vector3.new(width, 0.2, length)
 	end
-	local creatures = Instance.new("Folder")
-	creatures.Name = "Creatures"
-	creatures.Parent = world
-	MapService.creatureFolder = creatures
-	local belt = Instance.new("Folder")
-	belt.Name = "ConveyorItems"
-	belt.Parent = world
-	MapService.beltFolder = belt
+	part(parent, { Name = "Path", Size = size, CFrame = CFrame.new(mid.X, 0.1, mid.Z), Color = C(235, 215, 175), material = Enum.Material.Sand, CanCollide = true })
+end
+
+---------------------------------------------------------------------------
+-- áreas
+---------------------------------------------------------------------------
+local function buildShop(parent)
+	local m = Instance.new("Model")
+	m.Name = "UpgradeShop"
+	local x, z = 58, 0
+	part(m, { Name = "Floor", Size = Vector3.new(14, 0.4, 16), CFrame = CFrame.new(x, 0.2, z), Color = C(250, 240, 220) })
+	part(m, { Name = "Back", Size = Vector3.new(1, 10, 16), CFrame = CFrame.new(x + 6.5, 5, z), Color = C(90, 60, 160) })
+	local counter = part(m, { Name = "Counter", Size = Vector3.new(3, 3.4, 10), CFrame = CFrame.new(x + 1, 1.7, z), Color = C(255, 180, 60) })
+	for i = 0, 7 do
+		part(m, { Name = "Awning", Size = Vector3.new(8, 0.4, 2), CFrame = CFrame.new(x + 2.5, 10.2, z - 7 + i * 2) * CFrame.Angles(0, 0, math.rad(-12)), Color = (i % 2 == 0) and C(255, 90, 120) or C(255, 255, 255) })
+	end
+	local sign = part(m, { Name = "Sign", Size = Vector3.new(0.4, 2.6, 12), CFrame = CFrame.new(x - 1.8, 12.2, z), Color = C(40, 30, 70) })
+	local gui = surface(sign, Enum.NormalId.Left, 30)
+	label(gui, "⚙️ MELHORIAS")
+	prompt(counter, "Abrir loja", "Melhorias", { Panel = "Upgrades" })
+	m.Parent = parent
+	MapService.points.shop = Vector3.new(x - 6, 3, z)
+end
+
+local function buildRanking(parent)
+	local m = Instance.new("Model")
+	m.Name = "RankingBoard"
+	local x, z = -58, 0
+	part(m, { Name = "Floor", Size = Vector3.new(10, 0.4, 22), CFrame = CFrame.new(x, 0.2, z), Color = C(220, 230, 245) })
+	part(m, { Name = "Leg", Size = Vector3.new(1, 6, 1), CFrame = CFrame.new(x - 2, 3, z - 9), Color = C(50, 50, 60) })
+	part(m, { Name = "Leg", Size = Vector3.new(1, 6, 1), CFrame = CFrame.new(x - 2, 3, z + 9), Color = C(50, 50, 60) })
+	local board = part(m, { Name = "Board", Size = Vector3.new(0.6, 11, 22), CFrame = CFrame.new(x - 2, 11, z), Color = C(25, 25, 40) })
+	local gui = surface(board, Enum.NormalId.Right, 25)
+	local frame = Instance.new("Frame")
+	frame.Name = "Content"
+	frame.Size = UDim2.new(1, 0, 1, 0)
+	frame.BackgroundTransparency = 1
+	frame.Parent = gui
+	label(frame, "🏆 RANKING", { Name = "Title", Size = UDim2.new(1, 0, 0.14, 0) })
+	MapService.rankingBoard = frame
+	prompt(board, "Ver ranking", "Ranking", { Panel = "Ranking" })
+	m.Parent = parent
+	MapService.points.ranking = Vector3.new(x + 6, 3, z)
+end
+
+local function buildGallery(parent)
+	local gallery = Instance.new("Model")
+	gallery.Name = "Gallery"
+	part(gallery, { Name = "Floor", Size = Vector3.new(96, 0.4, 62), CFrame = CFrame.new(0, 0.2, 76), Color = C(240, 235, 250), material = Enum.Material.Marble })
+	local arch = part(gallery, { Name = "Arch", Size = Vector3.new(30, 3, 1), CFrame = CFrame.new(0, 12, 45), Color = C(120, 80, 200) })
+	part(gallery, { Name = "ArchLeg", Size = Vector3.new(1.5, 12, 1.5), CFrame = CFrame.new(-15, 6, 45), Color = C(120, 80, 200) })
+	part(gallery, { Name = "ArchLeg", Size = Vector3.new(1.5, 12, 1.5), CFrame = CFrame.new(15, 6, 45), Color = C(120, 80, 200) })
+	label(surface(arch, Enum.NormalId.Back, 25), "🏛️ GALERIA DE VITRINES")
+	local index = 0
+	for row = 0, 1 do
+		for col = 0, 3 do
+			index = index + 1
+			local cx, cz = -36 + col * 24, 62 + row * 28
+			local booth = Instance.new("Model")
+			booth.Name = "Booth" .. index
+			part(booth, { Name = "Tile", Size = Vector3.new(21, 0.3, 22), CFrame = CFrame.new(cx, 0.55, cz), Color = (index % 2 == 0) and C(220, 210, 245) or C(210, 230, 250) })
+			part(booth, { Name = "BackWall", Size = Vector3.new(21, 7, 0.8), CFrame = CFrame.new(cx, 3.9, cz + 10.6), Color = C(110, 90, 170) })
+			local sign = part(booth, { Name = "Sign", Size = Vector3.new(14, 2.4, 0.4), CFrame = CFrame.new(cx, 8.6, cz + 10.6), Color = C(40, 30, 60) })
+			local signLabel = label(surface(sign, Enum.NormalId.Front, 25), "Vitrine livre", { Name = "Owner" })
+			local slots = {}
+			for i = 1, UpgradeConfig.MaxShowcaseSlots do
+				local sx = cx - 6 + ((i - 1) % 3) * 6
+				local sz = cz - 3 + math.floor((i - 1) / 3) * 8
+				local pedestal = part(booth, { Name = "Pedestal" .. i, Size = Vector3.new(3, 3, 3), CFrame = CFrame.new(sx, 2.2, sz), Color = C(250, 250, 255), material = Enum.Material.Marble })
+				local glass = part(booth, { Name = "Glass" .. i, Size = Vector3.new(3.2, 3.6, 3.2), CFrame = CFrame.new(sx, 5.5, sz), Color = C(210, 240, 255), material = Enum.Material.Glass, Transparency = 0.8, CanCollide = false })
+				table.insert(slots, { pedestal = pedestal, glass = glass, anchor = CFrame.new(sx, 5.4, sz) })
+			end
+			booth.Parent = gallery
+			table.insert(MapService.booths, { model = booth, slots = slots, sign = signLabel, position = Vector3.new(cx, 3, cz - 9) })
+		end
+	end
+	gallery.Parent = parent
+	MapService.points.gallery = Vector3.new(0, 3, 50)
+end
+
+local function buildFutureArea(parent)
+	local m = Instance.new("Model")
+	m.Name = "FutureArea"
+	local x, z = 70, -70
+	part(m, { Name = "Ground", Size = Vector3.new(36, 0.3, 36), CFrame = CFrame.new(x, 0.15, z), Color = C(200, 170, 120), material = Enum.Material.Ground })
+	for i = 0, 8 do
+		local stripe = (i % 2 == 0) and C(255, 200, 0) or C(30, 30, 30)
+		part(m, { Name = "Barrier", Size = Vector3.new(4, 1, 0.5), CFrame = CFrame.new(x - 16 + i * 4, 2.5, z + 18), Color = stripe })
+		part(m, { Name = "Barrier", Size = Vector3.new(0.5, 1, 4), CFrame = CFrame.new(x - 18, 2.5, z - 16 + i * 4), Color = stripe })
+	end
+	part(m, { Name = "Wall", Size = Vector3.new(36, 6, 0.5), CFrame = CFrame.new(x, 3, z + 18.5), Transparency = 1 })
+	part(m, { Name = "Wall", Size = Vector3.new(0.5, 6, 36), CFrame = CFrame.new(x - 18.5, 3, z), Transparency = 1 })
+	local sign = part(m, { Name = "Sign", Size = Vector3.new(12, 3, 0.4), CFrame = CFrame.new(x - 2, 5, z + 19.2) * CFrame.Angles(0, math.rad(180), 0), Color = C(255, 200, 0) })
+	label(surface(sign, Enum.NormalId.Back, 25), "🚧 NOVA ÁREA EM BREVE", { TextColor3 = C(30, 30, 30), TextStrokeTransparency = 1 })
+	m.Parent = parent
+end
+
+local function setupLighting()
+	Lighting.ClockTime = 14.5
+	Lighting.Brightness = 2.2
+	Lighting.Ambient = C(110, 110, 130)
+	Lighting.OutdoorAmbient = C(150, 150, 170)
+	Lighting.GlobalShadows = true
+	Lighting.EnvironmentDiffuseScale = 0.5
+end
+
+function MapService.build()
+	setupLighting()
+	world = Instance.new("Folder")
+	world.Name = "MysteryPark"
 	world.Parent = workspace
-	MapService.world = world
+
+	local terrain = folder(world, "Ground")
+	part(terrain, { Name = "Grass", Size = Vector3.new(220, 2, 220), CFrame = CFrame.new(0, -1, 0), Color = C(110, 190, 90), material = Enum.Material.Grass })
+	part(terrain, { Name = "Plaza", Shape = Enum.PartType.Cylinder, Size = Vector3.new(0.4, 56, 56), CFrame = CFrame.new(0, 0.1, 0) * CFrame.Angles(0, 0, math.rad(90)), Color = C(245, 225, 190), material = Enum.Material.Pebble })
+	part(terrain, { Name = "PlazaRing", Shape = Enum.PartType.Cylinder, Size = Vector3.new(0.5, 20, 20), CFrame = CFrame.new(0, 0.12, 0) * CFrame.Angles(0, 0, math.rad(90)), Color = C(255, 140, 170), material = Enum.Material.SmoothPlastic })
+	local spawn = part(world, { class = "SpawnLocation", Name = "Spawn", Size = Vector3.new(8, 0.6, 8), CFrame = CFrame.new(0, 0.5, 8), Color = C(255, 210, 90), material = Enum.Material.Neon })
+	spawn.Neutral = true
+	spawn.Duration = 0
+	MapService.points.plaza = Vector3.new(0, 3, 8)
+
+	-- fonte decorativa no centro
+	part(world, { Name = "Fountain", Shape = Enum.PartType.Cylinder, Size = Vector3.new(1.4, 9, 9), CFrame = CFrame.new(0, 0.8, -6) * CFrame.Angles(0, 0, math.rad(90)), Color = C(200, 200, 215), material = Enum.Material.Marble })
+	part(world, { Name = "Water", Shape = Enum.PartType.Cylinder, Size = Vector3.new(0.2, 7.8, 7.8), CFrame = CFrame.new(0, 1.55, -6) * CFrame.Angles(0, 0, math.rad(90)), Color = C(90, 180, 255), material = Enum.Material.Glass, Transparency = 0.3, CanCollide = false })
+	part(world, { Name = "FountainOrb", Shape = Enum.PartType.Ball, Size = Vector3.new(2.4, 2.4, 2.4), CFrame = CFrame.new(0, 3.4, -6), Color = C(255, 120, 200), material = Enum.Material.Neon })
+
+	local paths = folder(world, "Paths")
+	path(paths, Vector3.new(0, 0, -26), Vector3.new(0, 0, -44), 10)
+	path(paths, Vector3.new(0, 0, 26), Vector3.new(0, 0, 46), 10)
+	path(paths, Vector3.new(26, 0, 0), Vector3.new(51, 0, 0), 8)
+	path(paths, Vector3.new(-26, 0, 0), Vector3.new(-53, 0, 0), 8)
+
+	-- máquinas lado a lado ao norte, de frente para a praça
+	local machinesFolder = folder(world, "Machines")
+	part(machinesFolder, { Name = "Platform", Size = Vector3.new(96, 0.6, 22), CFrame = CFrame.new(0, 0.3, -54), Color = C(60, 50, 90) })
+	local arch = part(machinesFolder, { Name = "Banner", Size = Vector3.new(40, 4, 0.6), CFrame = CFrame.new(0, 21, -60), Color = C(255, 80, 160) })
+	label(surface(arch, Enum.NormalId.Front, 20), "🎰 MYSTERY MACHINE")
+	for i, def in ipairs(MachineDefinitions.List) do
+		local x = -33 + (i - 1) * 22
+		local origin = CFrame.new(x, 0.6, -56)
+		local model, button, trayPoint = buildMachine(machinesFolder, def, origin)
+		MapService.machines[def.id] = {
+			model = model,
+			button = button,
+			trayPoint = trayPoint,
+			position = button.Position,
+			standPoint = Vector3.new(x, 3, -46),
+		}
+	end
+
+	buildShop(world)
+	buildRanking(world)
+	buildGallery(world)
+	buildFutureArea(world)
+
+	local deco = folder(world, "Decoration")
+	local trees = {
+		{ -80, -80 }, { -60, -88 }, { -88, -50 }, { 88, -40 }, { 92, 10 }, { 80, 40 }, { -86, 20 }, { -90, 60 },
+		{ -70, 92 }, { 70, 95 }, { 92, 75 }, { -40, -28 }, { 40, -30 }, { -40, 30 }, { 40, 28 }, { 0, -92 },
+	}
+	for i, t in ipairs(trees) do
+		tree(deco, t[1], t[2], 0.9 + (i % 3) * 0.15)
+	end
+	for _, l in ipairs({ { -8, -34 }, { 8, -34 }, { -8, 36 }, { 8, 36 }, { 38, -6 }, { 38, 6 }, { -38, -6 }, { -38, 6 } }) do
+		lamp(deco, l[1], l[2])
+	end
+	for _, f in ipairs({ { -18, -18 }, { 18, -18 }, { -18, 18 }, { 18, 18 } }) do
+		part(deco, { Name = "Flowerbed", Size = Vector3.new(6, 0.8, 6), CFrame = CFrame.new(f[1], 0.4, f[2]), Color = C(120, 80, 50), material = Enum.Material.Ground })
+		part(deco, { Name = "Flowers", Shape = Enum.PartType.Ball, Size = Vector3.new(4.5, 2, 4.5), CFrame = CFrame.new(f[1], 1.2, f[2]), Color = C(255, 120, 170), material = Enum.Material.Grass, CanCollide = false })
+	end
+
+	-- pontos onde aparecem as moedas perdidas
+	for i = 0, 11 do
+		local a = (i / 12) * math.pi * 2
+		local r = (i % 2 == 0) and 22 or 34
+		table.insert(MapService.pickupSpots, Vector3.new(math.cos(a) * r, 2, math.sin(a) * r))
+	end
+	MapService.pickupFolder = folder(world, "CoinPickups")
+	MapService.showcaseFolder = folder(world, "ShowcaseItems")
+	return world
 end
 
-function MapService.start() end
+function MapService.world()
+	return world
+end
+
+function MapService.machinePosition(machineId)
+	local m = MapService.machines[machineId]
+	return m and m.position
+end
 
 return MapService

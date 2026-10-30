@@ -1,19 +1,41 @@
--- Ponto de entrada do cliente do MUTANT FACTORY: interface (somente exibição; o servidor decide tudo).
+-- MYSTERY MACHINE — Máquina Surpresa: inicialização do cliente.
+-- O cliente só desenha e envia pedidos; o servidor decide tudo.
 
 local Controllers = script.Parent.Controllers
-local UI = require(Controllers.UIController)
-local Net = require(script.Parent.Util.Net)
-local Store = require(script.Parent.Util.Store)
+local Util = script.Parent.Util
 
-UI.init()
-UI.store = Store
-Net.setBusyHandler(UI.setLoading)
+local Store = require(Util.Store)
+local Net = require(Util.Net)
+local UIController = require(Controllers.UIController)
+local HUDController = require(Controllers.HUDController)
+local MachineController = require(Controllers.MachineController)
+local InventoryController = require(Controllers.InventoryController)
+local CollectionController = require(Controllers.CollectionController)
+local UpgradeController = require(Controllers.UpgradeController)
+local MissionController = require(Controllers.MissionController)
+local LeaderboardController = require(Controllers.LeaderboardController)
+local SettingsController = require(Controllers.SettingsController)
 
-for _, name in ipairs({ "HUDController", "EggController", "BaseController", "IndexController", "ProgressPanels", "WorldController" }) do
-	require(Controllers[name]).init()
-end
-
-Store.changed:Connect(function(view)
-	UI.refreshCurrent(view)
+Net.on("DataUpdated", function(view)
+	if type(view) == "table" then
+		Store.set(view)
+	end
 end)
-Store.init()
+
+UIController.init()
+HUDController.init()
+MachineController.init()
+InventoryController.init()
+CollectionController.init()
+UpgradeController.init()
+MissionController.init()
+LeaderboardController.init()
+SettingsController.init()
+
+-- pede a fotografia atual (caso o envio inicial do servidor tenha chegado antes do cliente)
+task.spawn(function()
+	while not Store.view do
+		Net.call("ProgressAction", { action = "sync" })
+		task.wait(2)
+	end
+end)

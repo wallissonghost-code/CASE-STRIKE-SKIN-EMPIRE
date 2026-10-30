@@ -1,8 +1,7 @@
 name: CI
 
-# Testes automáticos do MUTANT FACTORY a cada push e pull request.
-# Executa: verificação de sintaxe, testes de lógica, servidor + cliente em Roblox simulado,
-# verificação de requires e gera o place .rbxlx como artefato para baixar e abrir no Studio.
+# Testes automáticos do MYSTERY MACHINE a cada push e pull request:
+# sintaxe, lógica, servidor + cliente em Roblox simulado, requires e geração do place .rbxlx.
 
 on:
   push:
@@ -23,8 +22,8 @@ jobs:
       - name: Verificar requires
         run: python3 tests/check_requires.py
       - name: Gerar place .rbxlx
-        run: python3 tools/build_place.py MutantFactory.rbxlx
+        run: python3 tools/build_place.py MysteryMachine.rbxlx
       - uses: actions/upload-artifact@v4
         with:
-          name: MutantFactory-place
-          path: MutantFactory.rbxlx
+          name: MysteryMachine-place
+          path: MysteryMachine.rbxlx

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Gera MutantFactory.rbxlx a partir de src/ (mesmo mapeamento do default.project.json),
+Gera MysteryMachine.rbxlx a partir de src/ (mesmo mapeamento do default.project.json),
 para abrir direto no Roblox Studio sem Rojo.
 
 Uso: python3 tools/build_place.py [saida.rbxlx]
@@ -50,7 +50,7 @@ def folder_items(path):
 
 
 def main():
-    out_path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "MutantFactory.rbxlx")
+    out_path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "MysteryMachine.rbxlx")
     src = os.path.join(ROOT, "src")
     body = ""
     body += item("ReplicatedStorage", "ReplicatedStorage", item("Folder", "Shared", folder_items(os.path.join(src, "shared"))))

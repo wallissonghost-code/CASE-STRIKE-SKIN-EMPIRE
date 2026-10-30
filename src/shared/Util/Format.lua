@@ -1,76 +1,54 @@
--- Format: formatação de números e tempo para a interface.
+-- Formatação de números e tempos para a interface.
 
 local Format = {}
 
-local function groupDigits(intStr)
-	local out = intStr
-	local k
-	repeat
-		out, k = string.gsub(out, "^(-?%d+)(%d%d%d)", "%1.%2")
-	until k == 0
-	return out
-end
-
 -- 1234567 -> "1.234.567"
 function Format.int(n)
-	n = math.floor((n or 0) + 0.5)
-	return groupDigits(string.format("%.0f", n))
+	n = math.floor(tonumber(n) or 0)
+	local negative = n < 0
+	local s = string.format("%d", math.abs(n))
+	local out = string.reverse((string.gsub(string.reverse(s), "(%d%d%d)", "%1.")))
+	if string.sub(out, 1, 1) == "." then
+		out = string.sub(out, 2)
+	end
+	return (negative and "-" or "") .. out
 end
 
--- 1234567 -> "1,23 mi" (abreviado, padrão brasileiro)
+-- 1500 -> "1,5 mil"; 2500000 -> "2,5 mi"
 function Format.short(n)
-	n = n or 0
-	local abs = math.abs(n)
-	local suffixes = {
-		{ 1e12, " tri" },
-		{ 1e9, " bi" },
-		{ 1e6, " mi" },
-		{ 1e3, " mil" },
-	}
-	for _, s in ipairs(suffixes) do
-		if abs >= s[1] then
-			local v = n / s[1]
-			local str = string.format("%.2f", v)
-			str = string.gsub(str, "%.?0+$", "")
-			str = string.gsub(str, "%.", ",")
-			return str .. s[2]
-		end
+	n = tonumber(n) or 0
+	local function trim(x)
+		local s = string.format("%.1f", x)
+		s = string.gsub(s, "%.0$", "")
+		return (string.gsub(s, "%.", ","))
+	end
+	if n >= 1000000 then
+		return trim(n / 1000000) .. " mi"
+	elseif n >= 10000 then
+		return trim(n / 1000) .. " mil"
 	end
 	return Format.int(n)
 end
 
-function Format.credits(n)
-	return "$ " .. Format.short(n)
-end
-
--- 0.0123 -> "1,230%" (3 casas)
-function Format.percent(p, decimals)
-	decimals = decimals or 3
-	local str = string.format("%." .. decimals .. "f", p * 100)
-	str = string.gsub(str, "%.", ",")
-	return str .. "%"
-end
-
-function Format.rate(perSecond)
-	local str = string.format("%.2f", perSecond)
-	str = string.gsub(str, "%.", ",")
-	return str .. "/s"
+function Format.percent(p)
+	if p >= 10 or p == math.floor(p) then
+		return string.format("%d%%", math.floor(p + 0.5))
+	end
+	local s = string.format("%.2f", p)
+	s = string.gsub(s, "0+$", "")
+	s = string.gsub(s, "%.$", "")
+	return (string.gsub(s, "%.", ",")) .. "%"
 end
 
 function Format.duration(seconds)
 	seconds = math.max(0, math.floor(seconds))
-	local d = math.floor(seconds / 86400)
-	local h = math.floor((seconds % 86400) / 3600)
+	local h = math.floor(seconds / 3600)
 	local m = math.floor((seconds % 3600) / 60)
 	local s = seconds % 60
-	if d > 0 then
-		return d .. "d " .. h .. "h"
-	elseif h > 0 then
-		return h .. "h " .. m .. "min"
-	elseif m > 0 then
-		return m .. "min " .. s .. "s"
+	if h > 0 then
+		return string.format("%dh %02dm", h, m)
 	end
-	return s .. "s"
+	return string.format("%dm %02ds", m, s)
 end
 
 return Format

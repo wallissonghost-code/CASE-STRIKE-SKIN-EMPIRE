@@ -1,4 +1,4 @@
--- Ambiente Roblox simulado (mínimo) para executar o SERVIDOR real fora do Studio:
+-- Ambiente Roblox simulado (mínimo) do MYSTERY MACHINE para executar o SERVIDOR real fora do Studio:
 -- instâncias, serviços, DataStore em memória (com UpdateAsync e falhas simuláveis),
 -- agendador de tarefas com relógio virtual. Usado por tests/server_smoke.lua.
 
@@ -38,6 +38,7 @@ task = {
 		schedule(M.clock + (t or 0), co, ...)
 		return co
 	end,
+	cancel = function() end,
 	wait = function(t)
 		local co = coroutine.running()
 		local start = M.clock
@@ -145,6 +146,9 @@ CF.__add = function(a, v)
 end
 CFrame = {
 	new = function(x, y, z)
+		if x == nil then
+			return setmetatable({ Position = Vector3.new(0, 0, 0) }, CF)
+		end
 		if type(x) == "table" then
 			return setmetatable({ Position = x }, CF)
 		end
@@ -257,7 +261,7 @@ end
 M.newSignal = newSignal
 
 local Inst = {}
-local SIGNALS = { Destroying = true, Triggered = true, Activated = true, InputBegan = true, InputEnded = true, InputChanged = true, MouseButton1Click = true, OnClientEvent = true, DescendantAdded = true, ChildAdded = true }
+local SIGNALS = { Touched = true, FocusLost = true, Destroying = true, Triggered = true, Activated = true, InputBegan = true, InputEnded = true, InputChanged = true, MouseButton1Click = true, OnClientEvent = true, DescendantAdded = true, ChildAdded = true }
 local BASE_PART = { Part = true, WedgePart = true, SpawnLocation = true }
 local GUI_OBJECT = { Frame = true, TextLabel = true, TextButton = true, TextBox = true, ScrollingFrame = true, ViewportFrame = true, ImageLabel = true, ImageButton = true }
 
@@ -354,6 +358,12 @@ function methods:GetBoundingBox()
 	return CFrame.new(0, 0, 0), Vector3.new(2, 1, 1)
 end
 function methods:ScaleTo() end
+function methods:Play()
+	rawset(self, "__playing", true)
+end
+function methods:Stop()
+	rawset(self, "__playing", false)
+end
 local function wire(v)
 	-- simula a serialização do Roblox: copia e remove funções
 	if type(v) == "function" then
@@ -412,6 +422,10 @@ Inst.__index = function(self, k)
 end
 Inst.__newindex = function(self, k, v)
 	local props = rawget(self, "__props")
+	-- propriedades do Roblox começam com maiúscula: pega erros como `frame.radius = 10`
+	if type(k) == "string" and string.match(k, "^%l") and k ~= "kicked" then
+		error("propriedade inválida para " .. tostring(rawget(self, "__class")) .. ": " .. k, 2)
+	end
 	-- CFrame e Position andam juntos (como numa Part de verdade)
 	if k == "CFrame" and type(v) == "table" and v.Position then
 		props.Position = v.Position
@@ -564,6 +578,13 @@ function M.newGame(jobId)
 			end
 		end
 	end)
+	rawset(Players, "GetPlayerFromCharacter", function(_, char)
+		for _, p in pairs(M.players) do
+			if p.Character == char and p.Parent then
+				return p
+			end
+		end
+	end)
 	rawset(Players, "GetNameFromUserIdAsync", function(_, id)
 		return "User" .. id
 	end)
@@ -592,6 +613,8 @@ function M.newGame(jobId)
 	end }
 	services.UserInputService = { InputBegan = newSignal(), TouchEnabled = false }
 	services.StarterGui = { SetCoreGuiEnabled = function() end }
+	local soundService = svc("SoundService")
+	rawset(soundService, "PlayLocalSound", function() end)
 	services.ProximityPromptService = { PromptTriggered = newSignal() }
 	services.RunService = { IsStudio = function()
 		return M.isStudio == true

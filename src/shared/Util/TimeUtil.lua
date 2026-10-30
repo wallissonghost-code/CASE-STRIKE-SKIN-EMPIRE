@@ -1,25 +1,22 @@
--- TimeUtil: dias e semanas em UTC. Sempre alimentado pelo relógio do SERVIDOR.
+-- Relógio único do jogo (UTC). Usar sempre este módulo para datas de missões e presentes.
 
 local TimeUtil = {}
 
-local DAY = 86400
-local WEEK = 604800
-local MONDAY_EPOCH = 345600 -- 1970-01-05 00:00 UTC (segunda-feira)
-
-function TimeUtil.dayIndex(now)
-	return math.floor(now / DAY)
+function TimeUtil.now()
+	return DateTime.now().UnixTimestamp
 end
 
-function TimeUtil.weekIndex(now)
-	return math.floor((now - MONDAY_EPOCH) / WEEK)
+function TimeUtil.day(t)
+	return math.floor((t or TimeUtil.now()) / 86400)
 end
 
-function TimeUtil.secondsUntilNextDay(now)
-	return (TimeUtil.dayIndex(now) + 1) * DAY - now
+function TimeUtil.secondsToNextDay(t)
+	t = t or TimeUtil.now()
+	return (TimeUtil.day(t) + 1) * 86400 - t
 end
 
-function TimeUtil.secondsUntilNextWeek(now)
-	return MONDAY_EPOCH + (TimeUtil.weekIndex(now) + 1) * WEEK - now
+function TimeUtil.hour(t)
+	return math.floor((t or TimeUtil.now()) / 3600)
 end
 
 return TimeUtil

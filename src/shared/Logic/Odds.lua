@@ -1,129 +1,71 @@
--- Odds: tabelas de chance de espécies e mutações (com sorte e eventos).
--- O servidor sorteia com estas funções; o cliente usa as MESMAS para exibir as chances.
+-- Sorteio das máquinas. Usado SOMENTE pelo servidor para sortear e pela interface para
+-- mostrar as chances: os dois leem a mesma tabela de MachineDefinitions.
 
 local Shared = script.Parent.Parent
-local GameConfig = require(Shared.Config.GameConfig)
+local MachineDefinitions = require(Shared.MachineDefinitions)
+local ItemDefinitions = require(Shared.ItemDefinitions)
+local RarityConfig = require(Shared.RarityConfig)
 
 local Odds = {}
 
-local function clampLuck(luck)
-	return math.max(0, math.min(luck or 0, GameConfig.Luck.Max))
+function Odds.total(machine)
+	local sum = 0
+	for _, entry in ipairs(machine.pool) do
+		sum = sum + entry.chance
+	end
+	return sum
 end
 
--- rarityWeights = { Common = n, ... } (de um ovo ou da esteira)
--- Retorna lista { speciesId, rarity, p } (soma 1). O peso de uma raridade é dividido
--- igualmente entre as espécies daquela raridade.
-function Odds.speciesTable(rarityWeights, luck)
-	luck = clampLuck(luck)
-	local byRarity = {}
-	for _, s in ipairs(GameConfig.Species) do
-		byRarity[s.rarity] = byRarity[s.rarity] or {}
-		table.insert(byRarity[s.rarity], s)
-	end
-	local entries, total = {}, 0
-	for _, rid in ipairs(GameConfig.RarityOrder) do
-		local w = rarityWeights[rid]
-		local list = byRarity[rid]
-		if w and w > 0 and list then
-			local tier = GameConfig.tier(rid)
-			local scaled = w * (1 + luck * (GameConfig.Luck.RarityScale[tier] or 0))
-			for _, s in ipairs(list) do
-				local ew = scaled / #list
-				total = total + ew
-				table.insert(entries, { speciesId = s.id, rarity = rid, weight = ew, p = 0 })
-			end
-		end
-	end
-	assert(total > 0, "tabela de espécies vazia")
-	for _, e in ipairs(entries) do
-		e.p = e.weight / total
-	end
-	return entries
-end
-
--- event (opcional) = evento ativo (EventConfig.at); kind "mutation" multiplica o peso de uma mutação
-function Odds.mutationTable(luck, event)
-	luck = clampLuck(luck)
-	local entries, total = {}, 0
-	for _, mid in ipairs(GameConfig.MutationOrder) do
-		local m = GameConfig.Mutations[mid]
-		local w = m.weight * (1 + luck * (GameConfig.Luck.MutationScale[m.tier] or 0))
-		if event and event.kind == "mutation" and event.mutation == mid then
-			w = w * event.weightMult
-		end
-		total = total + w
-		table.insert(entries, { mutationId = mid, weight = w, p = 0 })
-	end
-	for _, e in ipairs(entries) do
-		e.p = e.weight / total
-	end
-	return entries
-end
-
-function Odds.pick(entries, r)
+-- r: número em [0, 1) vindo de Random (servidor). Retorna o id do objeto.
+function Odds.pick(machine, r)
+	local target = r * Odds.total(machine)
 	local acc = 0
-	for _, e in ipairs(entries) do
-		acc = acc + e.p
-		if r < acc then
-			return e
+	for _, entry in ipairs(machine.pool) do
+		acc = acc + entry.chance
+		if target < acc then
+			return entry.item
 		end
 	end
-	return entries[#entries]
+	return machine.pool[#machine.pool].item
 end
 
--- chance agregada por raridade
-function Odds.byRarity(entries)
+-- lista para a interface: { item, name, rarity, rarityName, chance, value }, da mais rara para a mais comum
+function Odds.display(machineId)
+	local machine = MachineDefinitions.get(machineId)
 	local out = {}
-	for _, e in ipairs(entries) do
-		out[e.rarity] = (out[e.rarity] or 0) + e.p
+	if not machine then
+		return out
 	end
-	return out
-end
-
--- percentuais arredondados que somam exatamente 100 (método do maior resto)
-function Odds.displayPercents(entries, decimals)
-	decimals = decimals or 2
-	local unit = 10 ^ decimals
-	local totalUnits = math.floor(100 * unit + 0.5)
-	local floors, rems, used = {}, {}, 0
-	for i, e in ipairs(entries) do
-		local exact = e.p * 100 * unit
-		floors[i] = math.floor(exact)
-		rems[i] = { i = i, r = exact - floors[i] }
-		used = used + floors[i]
+	local total = Odds.total(machine)
+	for _, entry in ipairs(machine.pool) do
+		local item = ItemDefinitions.get(entry.item)
+		table.insert(out, {
+			item = entry.item,
+			name = item.name,
+			rarity = item.rarity,
+			rarityName = RarityConfig.get(item.rarity).name,
+			chance = entry.chance * 100 / total,
+			value = item.value,
+		})
 	end
-	table.sort(rems, function(a, b)
-		if a.r == b.r then
-			return a.i < b.i
+	table.sort(out, function(a, b)
+		local ra, rb = RarityConfig.rank(a.rarity), RarityConfig.rank(b.rarity)
+		if ra ~= rb then
+			return ra > rb
 		end
-		return a.r > b.r
+		return a.chance < b.chance
 	end)
-	local k = 1
-	while used < totalUnits and #rems > 0 do
-		floors[rems[k].i] = floors[rems[k].i] + 1
-		used = used + 1
-		k = (k % #rems) + 1
-	end
-	local out = {}
-	for i = 1, #entries do
-		out[i] = floors[i] / unit
-	end
 	return out
 end
 
--- valor esperado (em moedas) de um ovo, sem sorte
-function Odds.expectedEggValue(egg, luck, event)
-	local sp = Odds.speciesTable(egg.rarityWeights, luck)
-	local mu = Odds.mutationTable(luck, event)
-	local avgMult = 0
-	for _, e in ipairs(mu) do
-		avgMult = avgMult + e.p * GameConfig.Mutations[e.mutationId].mult
-	end
+-- valor médio de venda por abertura (para balanceamento e testes)
+function Odds.expectedValue(machine)
+	local total = Odds.total(machine)
 	local ev = 0
-	for _, e in ipairs(sp) do
-		ev = ev + e.p * GameConfig.SpeciesById[e.speciesId].price
+	for _, entry in ipairs(machine.pool) do
+		ev = ev + ItemDefinitions.get(entry.item).value * entry.chance / total
 	end
-	return ev * avgMult
+	return ev
 end
 
 return Odds

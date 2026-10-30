@@ -1,104 +1,139 @@
--- Remotes: cria os remotes e despacha as ações recebidas para os serviços.
--- Toda chamada passa por: validação do formato, limite de frequência, deduplicação
--- por requestId (pedidos repetidos recebem a mesma resposta sem reexecutar) e pcall.
+-- Cria a pasta ReplicatedStorage.Remotes e centraliza o tratamento de pedidos do cliente.
+--
+-- Todo pedido (RemoteFunction) passa por: perfil carregado → requestId repetido (devolve a mesma
+-- resposta sem repetir a operação) → limite de frequência → trava por jogador → operação com
+-- cópia de segurança do perfil (restaurada se der erro no meio) → marca o perfil como alterado.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local RemoteNames = require(ReplicatedStorage.Shared.Net.RemoteNames)
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local ProfileSchema = require(Shared.Logic.ProfileSchema)
 local RateLimiter = require(script.Parent.RateLimiter)
-local Validate = require(script.Parent.Validate)
 
 local Remotes = {}
 
-local folder
-local handlers = {} -- [functionName][action] = { category, fn }
-local recentRequests = {} -- [player] = { order = {}, responses = {} }
-local MAX_RECENT = 40
+Remotes.Functions = { "RequestMachineUse", "InventoryAction", "UpgradeAction", "ProgressAction" }
+Remotes.Events = { "MachineResult", "DataUpdated", "Notify", "LeaderboardUpdated" }
 
-function Remotes.init()
-	folder = Instance.new("Folder")
-	folder.Name = "Remotes"
-	for _, name in ipairs(RemoteNames.Functions) do
+local folder
+local handlers = {} -- [remoteName][action] = { fn, category }
+local recent = {} -- [player] = { ids = {requestId = response}, order = {...} }
+local busy = {} -- [player] = true durante uma operação
+local dataService -- injetado por init (evita dependência circular)
+local afterSuccess = {}
+
+local MAX_RECENT = 30
+
+local function remember(player, requestId, response)
+	local r = recent[player]
+	if not r then
+		r = { ids = {}, order = {} }
+		recent[player] = r
+	end
+	r.ids[requestId] = response
+	table.insert(r.order, requestId)
+	if #r.order > MAX_RECENT then
+		r.ids[table.remove(r.order, 1)] = nil
+	end
+end
+
+local function dispatch(remoteName, player, payload)
+	if type(payload) ~= "table" or type(payload.action) ~= "string" then
+		return { ok = false, error = "invalid", message = "Pedido inválido." }
+	end
+	local entry = handlers[remoteName][payload.action]
+	if not entry then
+		return { ok = false, error = "invalid", message = "Ação desconhecida." }
+	end
+	local profile = dataService.getProfile(player)
+	if not profile then
+		return { ok = false, error = "loading", message = "Carregando seus dados..." }
+	end
+	local requestId = payload.requestId
+	if type(requestId) == "string" and #requestId <= 64 then
+		local r = recent[player]
+		if r and r.ids[requestId] then
+			return r.ids[requestId]
+		end
+	else
+		requestId = nil
+	end
+	if not RateLimiter.allow(player, entry.category) then
+		return { ok = false, error = "rate", message = "Calma! Muitos pedidos seguidos." }
+	end
+	if busy[player] then
+		return { ok = false, error = "busy", message = "Aguarde a ação anterior terminar." }
+	end
+	busy[player] = true
+	local backup = ProfileSchema.deepCopy(profile)
+	local ok, result = pcall(entry.fn, player, profile, payload)
+	busy[player] = nil
+	if not ok then
+		warn("[MYSTERY MACHINE] erro em " .. remoteName .. "." .. payload.action .. ": " .. tostring(result))
+		dataService.restore(player, backup)
+		result = { ok = false, error = "server", message = "Algo deu errado. Nada foi alterado." }
+	elseif type(result) ~= "table" then
+		result = { ok = false, error = "server", message = "Resposta inválida." }
+	end
+	if result.ok then
+		dataService.markDirty(player)
+		for _, fn in ipairs(afterSuccess) do
+			fn(player, result)
+		end
+	end
+	if requestId then
+		remember(player, requestId, result)
+	end
+	return result
+end
+
+function Remotes.init(playerDataService)
+	dataService = playerDataService
+	folder = ReplicatedStorage:FindFirstChild("Remotes")
+	if not folder then
+		folder = Instance.new("Folder")
+		folder.Name = "Remotes"
+		folder.Parent = ReplicatedStorage
+	end
+	for _, name in ipairs(Remotes.Functions) do
 		local rf = Instance.new("RemoteFunction")
 		rf.Name = name
 		rf.Parent = folder
 		handlers[name] = {}
 		rf.OnServerInvoke = function(player, payload)
-			return Remotes._dispatch(name, player, payload)
+			return dispatch(name, player, payload)
 		end
 	end
-	for _, name in ipairs(RemoteNames.Events) do
+	for _, name in ipairs(Remotes.Events) do
 		local re = Instance.new("RemoteEvent")
 		re.Name = name
 		re.Parent = folder
 	end
-	folder.Parent = ReplicatedStorage
+end
+
+-- registra fn(player, profile, payload) -> resultado para remote/action
+function Remotes.handle(remoteName, action, category, fn)
+	handlers[remoteName][action] = { fn = fn, category = category }
+end
+
+function Remotes.onSuccess(fn)
+	table.insert(afterSuccess, fn)
 end
 
 function Remotes.event(name)
 	return folder:FindFirstChild(name)
 end
 
--- Registra o tratador de uma ação.
-function Remotes.on(functionName, action, category, fn)
-	assert(handlers[functionName], "remote desconhecido: " .. functionName)
-	handlers[functionName][action] = { category = category, fn = fn }
+function Remotes.notify(player, text, kind)
+	Remotes.event("Notify"):FireClient(player, { text = text, kind = kind or "info" })
 end
 
-function Remotes.fail(code, message)
-	return { ok = false, error = code, message = message }
+function Remotes.notifyAll(text, kind)
+	Remotes.event("Notify"):FireAllClients({ text = text, kind = kind or "info" })
 end
 
-local function remember(player, requestId, response)
-	local r = recentRequests[player]
-	if not r then
-		r = { order = {}, responses = {} }
-		recentRequests[player] = r
-	end
-	r.responses[requestId] = response
-	table.insert(r.order, requestId)
-	if #r.order > MAX_RECENT then
-		local old = table.remove(r.order, 1)
-		r.responses[old] = nil
-	end
-end
-
-function Remotes._dispatch(functionName, player, payload)
-	if type(payload) ~= "table" or not Validate.id(payload.action, 32) then
-		return Remotes.fail("invalid_request", "Pedido inválido.")
-	end
-	local h = handlers[functionName][payload.action]
-	if not h then
-		return Remotes.fail("invalid_request", "Ação desconhecida.")
-	end
-	local requestId = payload.requestId
-	if requestId ~= nil then
-		if not Validate.id(requestId, 40) then
-			return Remotes.fail("invalid_request", "Pedido inválido.")
-		end
-		local r = recentRequests[player]
-		if r and r.responses[requestId] then
-			return r.responses[requestId] -- pedido repetido: não executa de novo
-		end
-	end
-	if not RateLimiter.allow(player, h.category) then
-		return Remotes.fail("rate_limited", "Calma! Muitas ações em sequência.")
-	end
-	local ok, result = pcall(h.fn, player, payload)
-	if not ok then
-		warn("[Remotes] erro em " .. functionName .. "/" .. payload.action .. ": " .. tostring(result))
-		return Remotes.fail("server_error", "Erro no servidor. Nada foi alterado; tente novamente.")
-	end
-	if type(result) ~= "table" then
-		result = Remotes.fail("server_error", "Resposta inválida.")
-	end
-	if requestId ~= nil then
-		remember(player, requestId, result)
-	end
-	return result
-end
-
-function Remotes.clearPlayer(player)
-	recentRequests[player] = nil
+function Remotes.clear(player)
+	recent[player] = nil
+	busy[player] = nil
 	RateLimiter.clear(player)
 end
 

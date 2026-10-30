@@ -1,54 +1,64 @@
-# Registro de testes — MUTANT FACTORY
+# Registro de testes — MYSTERY MACHINE
 
-Executados com `python3 tests/harness.py` em 28/10/2026:
-- **30 testes de lógica** e **32 de servidor + cliente**, todos passando.
-- `tests/check_requires.py`: 106 requires verificados, sem erros.
+Executados com `python3 tests/harness.py` em 30/10/2026:
+- **27 testes de lógica** (`tests/spec.lua`) e **39 de servidor + cliente** (`tests/server_smoke.lua`), todos passando;
+- `tests/check_requires.py`: todos os `require` apontam para módulos existentes.
 
-"Simulado" = `Main.server.lua` e `Main.client.lua` reais rodando em `tests/roblox_mock.lua`, com:
-- DataStore em memória, inclusive falhas;
-- relógio virtual;
-- personagens com posição;
-- botões de proximidade disparados;
-- cliques reais na interface.
+"Simulado" significa: `Main.server.lua` e `Main.client.lua` reais rodando em `tests/roblox_mock.lua`, com
+DataStore em memória (inclusive falhas), relógio virtual, personagens com posição, prompts e toques
+disparados e cliques reais nos botões da interface. O mock também falha se o código atribuir uma
+propriedade que não existe numa instância. **Isso não substitui o Roblox Studio** (física, render,
+câmera, rede real e DataStore real).
 
-Isso **não substitui o Roblox Studio**: física, câmera, renderização e rede real só aparecem lá (roteiro abaixo).
+## Critérios de aceitação
 
-| Área | O que foi verificado | Resultado |
+| # | Critério | Situação |
 |---|---|---|
-| Carga e salvamento | trava de sessão, saída libera a trava, reinício do servidor mantém moedas e criaturas, perfil travado por outro servidor não carrega, falhas temporárias repetidas | ✅ simulado |
-| Bases | 6 bases, jogador levado até a sua, 7º jogador recebe aviso de servidor cheio | ✅ simulado |
-| Esteira | criaturas aparecem e andam; compra só de perto, pelo preço do servidor; quem chega depois recebe "outra pessoa comprou" | ✅ simulado |
-| Ovos | cobrança única com `requestId` repetido, preço do cliente ignorado, limite de frequência, chances somam 100%, 100 mil sorteios seguem as chances, valor esperado ≈ preço | ✅ |
-| Renda | por horário, limite do cofre, offline, relógio voltando, poção e evento de renda só no período certo, cofre maior não perde nem duplica | ✅ |
-| Coleta | só dentro da própria base | ✅ simulado |
-| Roubo | proteção de novato, pegar (prompt), vítima avisada, venda travada durante o roubo, mais devagar carregando, entrega muda o dono e salva os dois perfis | ✅ simulado |
-| Roubo — devolução | dono encosta (defesa), tempo esgotado, escudo ligado com ladrão dentro, ladrão sai do servidor | ✅ simulado |
-| Roubo — bloqueios | escudo ativo, criatura protegida por 3 min, base do ladrão cheia | ✅ |
-| Escudo | só dentro da base, empurra visitantes, não liga duas vezes | ✅ simulado |
-| Melhorias, poções, venda | custos, níveis máximos, efeitos, confirmação para Lendária/Mítica | ✅ |
-| Missões, presentes, índice | progresso por evento, resgate único, recompensa proporcional à renda, sequência diária, marcos | ✅ |
-| Renascer | frase de confirmação, custo, mantém índice/melhorias, bloqueado com criatura sendo roubada | ✅ |
-| Eventos | agenda fixa, aviso a todos, chances mudam; evento de teste só no Studio | ✅ |
-| Integridade | perfil corrompido reparado (moedas, pedestais duplicados, criaturas inexistentes) | ✅ |
-| Interface | HUD, 9 painéis abrem, abrir ovo, melhorar, presente, aviso de roubo | ✅ simulado |
+| 1 | Jogador consegue entrar | ✅ simulado (perfil carrega, HUD aparece) — conferir no Studio |
+| 2 | Máquina visível | ✅ modelo criado (corpo, visor, compartimento, botão, luzes, placa) — **conferir visual no Studio** |
+| 3 | Interação funciona | ✅ simulado (prompt abre o painel, USAR MÁQUINA) |
+| 4 | Saldo descontado corretamente | ✅ (inclui preço enviado pelo cliente ignorado e requestId repetido) |
+| 5 | Resultado calculado no servidor | ✅ (`Random` do servidor; 200 mil sorteios seguem as chances) |
+| 6 | Objeto premiado aparece visualmente | ✅ simulado (modelo no compartimento e no painel) — **conferir no Studio** |
+| 7 | Item entra no inventário | ✅ |
+| 8 | Venda funciona | ✅ (valor do servidor, confirmação, favoritos, expostos) |
+| 9 | Saldo atualiza | ✅ (HUD e leaderstats) |
+| 10 | Dados persistem após sair | ✅ simulado (saída salva e libera trava; outro servidor carrega) — **conferir com DataStore real** |
+| 11 | Nível e XP funcionam | ✅ |
+| 12 | Coleções registram descobertas | ✅ |
+| 13 | Melhorias funcionam | ✅ |
+| 14 | Interface em dispositivos móveis | ⚠️ escala por UIScale implementada; **conferir no emulador de dispositivos** |
+| 15 | Sem erros críticos conhecidos de duplicação ou perda de dados | ✅ nos cenários testados (lista abaixo) |
 
-## Roteiro manual no Roblox Studio
+## O que foi verificado
 
-1. Gere o place com `python3 tools/build_place.py`, abra `MutantFactory.rbxlx` e dê Play.
-   - O Output deve mostrar `[MUTANT FACTORY] servidor pronto`.
-   - Você deve aparecer na sua base.
-2. Teste a esteira: vá até a praça, aperte E numa criatura da esteira e confira que ela aparece num pedestal da sua base.
-3. Teste os ovos: abra o Ovo Básico no quiosque. A animação deve tocar e a criatura deve ir para a base.
-4. Espere 1 minuto e colete no terminal amarelo.
-5. Teste o roubo com *Test → Clients and Servers*, 2 jogadores:
-   - espere 2 min (proteção de novato);
-   - com o jogador 2, entre na base do 1, segure E numa criatura e corra até a própria base;
-   - repita e, com o jogador 1, encoste no ladrão;
-   - repita e trave a base com o ladrão dentro.
-6. Escudo: com ele ativo, o jogador 2 deve ser levado para fora ao tentar entrar.
-7. Persistência:
-   - publique, ative *Enable Studio Access to API Services*;
-   - saia e volte: moedas e criaturas devem continuar;
-   - volte depois de alguns minutos: as moedas guardadas devem ter crescido.
-8. Celular: use o emulador de dispositivos (celular paisagem e tablet). Nada deve ficar cortado e os botões devem ser tocáveis.
-9. Desempenho: com 6 jogadores e 20 criaturas cada, acompanhe *Developer Console → Memory* e o *MicroProfiler*.
+| Área | Cenários | Resultado |
+|---|---|---|
+| Configuração | 4 máquinas com preços/níveis do design, 20 objetos únicos, cada um na máquina de origem, chances somam 100% e a tela mostra as mesmas usadas no sorteio | ✅ |
+| Sorteio e economia | limites do sorteio, distribuição em 200 mil aberturas, retorno médio de 85–97% do preço | ✅ |
+| Máquina | longe recusa, cobra o preço, entrega, anima para todos, preço/resultado do cliente ignorados, requestId repetido, intervalo mínimo, limite de frequência, bloqueio por nível, inventário cheio, sem saldo | ✅ |
+| Inventário e venda | venda única, quantidades inválidas, favoritos protegidos, confirmação de raros, vender repetidos | ✅ |
+| Vitrine | modelo 3D e placa no estande, não expõe mais do que possui, exposto não vende, retirar | ✅ |
+| Progressão | curva de níveis, recompensa de nível paga uma vez, XP de abertura com limite diário, melhorias e limites | ✅ |
+| Missões e presentes | 3 por dia com 1 gratuita, resgate único, troca diária, conquistas, presente com sequência | ✅ |
+| Moedas perdidas | só perto, limite por hora, reaparecem; jogador zerado consegue voltar a jogar | ✅ |
+| Coleção e títulos | recompensa única, título exibido acima da cabeça | ✅ |
+| Dados | trava de sessão, autosave com falha temporária, saída, desligamento, outro servidor com o perfil aberto, falha de carregamento sem sobrescrever, perfil corrompido reparado, modo memória | ✅ simulado |
+| Erro no meio de operação | perfil restaurado | ✅ |
+| Ranking | servidor (memória) e global (OrderedDataStore) com cache | ✅ simulado |
+| Interface | HUD, 7 painéis do menu (um por vez), painel da máquina com chances, usar/pular/resultado, vender pelo resultado, inventário, melhorias, presente, coleção/títulos, configurações, ranking, avisos | ✅ simulado |
+
+## Roteiro manual no Roblox Studio (antes de publicar)
+
+1. `python3 tools/build_place.py`, abra `MysteryMachine.rbxlx` e dê Play.
+   O Output deve mostrar `[MYSTERY MACHINE] servidor pronto` e nenhum erro vermelho.
+2. **Visual:** ande pelo parque: praça com fonte, 4 máquinas ao norte, loja a leste, ranking a oeste,
+   galeria ao sul, área "em breve". Confira se nada flutua, atravessa ou está virado.
+3. **Máquina Comum:** aperte E no botão, use, veja luzes, cápsulas e o objeto no compartimento. Teste PULAR.
+4. **Inventário:** venda, favorite, venda repetidos, exponha e vá até a galeria ver o objeto.
+5. **Sem saldo:** gaste tudo e recupere com moedas perdidas e presente diário.
+6. **Melhorias:** compre velocidade e confira a animação mais curta.
+7. **Dois jogadores** (*Test → Clients and Servers*): um vê a máquina do outro animar e visita a vitrine dele.
+8. **Persistência:** publique, ative *Enable Studio Access to API Services*, saia e volte.
+9. **Celular e tablet:** emulador de dispositivos em paisagem e retrato; nada cortado, botões tocáveis.
+10. **Desempenho:** com 8 jogadores, acompanhe *Developer Console → Memory* e o *MicroProfiler*.

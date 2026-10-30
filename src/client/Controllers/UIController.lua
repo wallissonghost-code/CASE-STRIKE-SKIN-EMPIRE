@@ -1,761 +1,235 @@
--- UIController: tema, componentes reutilizáveis, escala responsiva (PC/celular),
--- gerenciador de painéis (apenas um aberto por vez), avisos e diálogos de confirmação.
+-- Gerencia as telas (ScreenGui) e as janelas. Regras:
+-- * só UMA janela grande aberta por vez (abrir outra fecha a atual);
+-- * cada janela é montada só na primeira vez que abre (carregamento sob demanda) e reaproveitada;
+-- * tudo é desenhado em 1100×650 virtuais e escalado (UIScale) para o tamanho da tela.
 
 local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local TweenService = game:GetService("TweenService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UI = require(script.Parent.Parent.Util.UI)
+local Store = require(script.Parent.Parent.Util.Store)
+local Sounds = require(script.Parent.Parent.Util.Sounds)
 
-local Shared = ReplicatedStorage.Shared
-local GameConfig = require(Shared.Config.GameConfig)
-local CreatureModel = require(Shared.Visual.CreatureModel)
-local Format = require(Shared.Util.Format)
+local UIController = {}
 
-local UI = {}
+UIController.current = nil
+UIController.panels = {}
+UIController.screens = {}
+UIController.scale = 1
 
 local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+local scales = {}
 
-UI.Theme = {
-	bg = Color3.fromRGB(14, 18, 24),
-	panel = Color3.fromRGB(22, 28, 38),
-	panel2 = Color3.fromRGB(33, 42, 56),
-	stroke = Color3.fromRGB(255, 255, 255),
-	text = Color3.fromRGB(240, 248, 240),
-	muted = Color3.fromRGB(160, 178, 170),
-	accent = Color3.fromRGB(255, 190, 50),
-	toxic = Color3.fromRGB(120, 240, 80),
-	good = Color3.fromRGB(70, 205, 110),
-	bad = Color3.fromRGB(235, 70, 80),
-	blue = Color3.fromRGB(70, 140, 255),
-	purple = Color3.fromRGB(160, 90, 245),
-	locked = Color3.fromRGB(90, 92, 105),
-}
-UI.Fonts = {
-	title = Enum.Font.FredokaOne,
-	body = Enum.Font.GothamMedium,
-	bold = Enum.Font.GothamBold,
-}
-UI.DesignSize = Vector2.new(1280, 720)
+local VIRTUAL_W, VIRTUAL_H = 1100, 650
+local WINDOW_W, WINDOW_H = 780, 500
+
+local function computeScale()
+	local camera = workspace.CurrentCamera
+	local size = camera and camera.ViewportSize or Vector2.new(VIRTUAL_W, VIRTUAL_H)
+	return math.clamp(math.min(size.X / VIRTUAL_W, size.Y / VIRTUAL_H), 0.5, 1.3)
+end
+
+local function applyScale()
+	UIController.scale = computeScale()
+	for _, s in ipairs(scales) do
+		s.Scale = UIController.scale
+	end
+end
+
+function UIController.screen(name, displayOrder)
+	local gui = UIController.screens[name]
+	if gui then
+		return gui
+	end
+	gui = UI.make("ScreenGui", {
+		Name = name,
+		ResetOnSpawn = false,
+		ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+		DisplayOrder = displayOrder or 1,
+		Parent = playerGui,
+	})
+	local scale = UI.make("UIScale", { Scale = UIController.scale, Parent = gui })
+	table.insert(scales, scale)
+	UIController.screens[name] = gui
+	return gui
+end
+
+-- janela padrão centralizada: retorna janela, área de conteúdo e título
+function UIController.window(screenName, title)
+	local gui = UIController.screen(screenName, 5)
+	local window = UI.frame(gui, {
+		Name = "Window",
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(0.5, 0, 0.5, 10),
+		Size = UDim2.new(0, WINDOW_W, 0, WINDOW_H),
+		BackgroundColor3 = UI.Theme.panel,
+		Visible = false,
+		radius = 16,
+	})
+	UI.stroke(window, UI.Theme.accent, 3)
+	local titleLabel = UI.label(window, title, {
+		Name = "Title",
+		Font = Enum.Font.FredokaOne,
+		Position = UDim2.new(0, 20, 0, 10),
+		Size = UDim2.new(1, -90, 0, 38),
+		MaxText = 32,
+	})
+	UI.button(window, "X", UI.Theme.red, function()
+		UIController.close()
+	end, { Name = "Close", Position = UDim2.new(1, -56, 0, 10), Size = UDim2.new(0, 44, 0, 40) })
+	local content = UI.make("Frame", {
+		Name = "Content",
+		BackgroundTransparency = 1,
+		Position = UDim2.new(0, 16, 0, 58),
+		Size = UDim2.new(1, -32, 1, -72),
+		Parent = window,
+	})
+	return window, content, titleLabel
+end
+
+-- panel = { screen, title, build(content, window, titleLabel), refresh(view), onOpen(args), onClose() }
+function UIController.register(name, panel)
+	UIController.panels[name] = panel
+end
+
+local function ensureBuilt(panel)
+	if panel.window then
+		return
+	end
+	local window, content, titleLabel = UIController.window(panel.screen, panel.title)
+	panel.window, panel.content, panel.titleLabel = window, content, titleLabel
+	panel.build(content, window, titleLabel)
+end
+
+function UIController.open(name, args)
+	local panel = UIController.panels[name]
+	if not panel then
+		return
+	end
+	if UIController.current and UIController.current ~= name then
+		UIController.close(true)
+	end
+	ensureBuilt(panel)
+	UIController.current = name
+	panel.window.Visible = true
+	if panel.onOpen then
+		panel.onOpen(args or {})
+	end
+	if panel.refresh and Store.view then
+		panel.refresh(Store.view)
+	end
+	Sounds.play("click")
+end
+
+function UIController.toggle(name, args)
+	if UIController.current == name then
+		UIController.close()
+	else
+		UIController.open(name, args)
+	end
+end
+
+function UIController.close(silent)
+	local name = UIController.current
+	if not name then
+		return
+	end
+	local panel = UIController.panels[name]
+	UIController.current = nil
+	if panel.window then
+		panel.window.Visible = false
+	end
+	if panel.onClose then
+		panel.onClose()
+	end
+	if not silent then
+		Sounds.play("click")
+	end
+end
+
+function UIController.refreshCurrent()
+	local name = UIController.current
+	local panel = name and UIController.panels[name]
+	if panel and panel.refresh and Store.view then
+		panel.refresh(Store.view)
+	end
+end
 
 ---------------------------------------------------------------------------
--- construção básica
+-- avisos (toasts) e confirmação
 ---------------------------------------------------------------------------
+local toastHolder
+local TOAST_COLORS = {
+	info = UI.Theme.card,
+	coins = Color3.fromRGB(150, 110, 20),
+	warn = Color3.fromRGB(150, 50, 60),
+	level = Color3.fromRGB(40, 110, 170),
+	legendary = Color3.fromRGB(170, 120, 10),
+	secret = Color3.fromRGB(160, 20, 40),
+}
 
-function UI.make(className, props, children)
-	local inst = Instance.new(className)
-	local parent = nil
-	for k, v in pairs(props or {}) do
-		if k == "Parent" then
-			parent = v
-		else
-			inst[k] = v
+function UIController.toast(text, kind)
+	if not toastHolder then
+		local gui = UIController.screen("Toasts", 20)
+		toastHolder = UI.make("Frame", {
+			Name = "Holder",
+			BackgroundTransparency = 1,
+			AnchorPoint = Vector2.new(1, 0),
+			Position = UDim2.new(1, -12, 0, 70),
+			Size = UDim2.new(0, 340, 0, 400),
+			Parent = gui,
+		})
+		UI.list(toastHolder, 6)
+	end
+	local items = {}
+	for _, c in ipairs(toastHolder:GetChildren()) do
+		if c:IsA("Frame") then
+			table.insert(items, c)
 		end
 	end
-	for _, child in ipairs(children or {}) do
-		child.Parent = inst
+	if #items >= 4 then
+		items[1]:Destroy()
 	end
-	if parent then
-		inst.Parent = parent
-	end
-	return inst
-end
-
-function UI.corner(inst, radius)
-	UI.make("UICorner", { CornerRadius = UDim.new(0, radius or 10), Parent = inst })
-	return inst
-end
-
-function UI.stroke(inst, color, thickness, transparency)
-	UI.make("UIStroke", {
-		Color = color or UI.Theme.stroke,
-		Thickness = thickness or 1.5,
-		Transparency = transparency or 0.82,
-		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
-		Parent = inst,
-	})
-	return inst
-end
-
-function UI.padding(inst, px)
-	UI.make("UIPadding", {
-		PaddingTop = UDim.new(0, px),
-		PaddingBottom = UDim.new(0, px),
-		PaddingLeft = UDim.new(0, px),
-		PaddingRight = UDim.new(0, px),
-		Parent = inst,
-	})
-	return inst
-end
-
-function UI.list(inst, padding, horizontal, align)
-	UI.make("UIListLayout", {
-		Padding = UDim.new(0, padding or 6),
-		FillDirection = horizontal and Enum.FillDirection.Horizontal or Enum.FillDirection.Vertical,
-		SortOrder = Enum.SortOrder.LayoutOrder,
-		HorizontalAlignment = align or Enum.HorizontalAlignment.Left,
-		VerticalAlignment = Enum.VerticalAlignment.Top,
-		Parent = inst,
-	})
-	return inst
-end
-
-function UI.frame(props)
-	props = props or {}
-	if props.BackgroundColor3 == nil then
-		props.BackgroundColor3 = UI.Theme.panel2
-	end
-	if props.BorderSizePixel == nil then
-		props.BorderSizePixel = 0
-	end
-	local f = UI.make("Frame", props)
+	local f = UI.frame(toastHolder, { Name = "Toast", Size = UDim2.new(1, 0, 0, 48), BackgroundColor3 = TOAST_COLORS[kind] or UI.Theme.card })
+	UI.stroke(f, Color3.fromRGB(0, 0, 0), 2)
+	UI.label(f, text, { Position = UDim2.new(0, 10, 0, 4), Size = UDim2.new(1, -20, 1, -8), TextWrapped = true, MaxText = 18 })
+	task.delay(kind == "secret" and 7 or 4, function()
+		if f.Parent then
+			f:Destroy()
+		end
+	end)
 	return f
 end
 
-function UI.text(props)
-	local defaults = {
-		BackgroundTransparency = 1,
-		TextColor3 = UI.Theme.text,
-		Font = UI.Fonts.body,
-		TextSize = 16,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		TextWrapped = true,
-		RichText = true,
-	}
-	for k, v in pairs(defaults) do
-		if props[k] == nil then
-			props[k] = v
-		end
+-- janela pequena de confirmação (não fecha a janela grande atual)
+function UIController.confirm(text, yesText, onYes)
+	local gui = UIController.screen("Dialogs", 30)
+	local old = gui:FindFirstChild("Confirm")
+	if old then
+		old:Destroy()
 	end
-	return UI.make("TextLabel", props)
-end
-
--- botão com cor, cantos e efeito de toque; props.onClick
-function UI.button(props)
-	local onClick = props.onClick
-	props.onClick = nil
-	local color = props.color or UI.Theme.accent
-	props.color = nil
-	local defaults = {
-		BackgroundColor3 = color,
-		AutoButtonColor = true,
-		TextColor3 = Color3.new(1, 1, 1),
-		Font = UI.Fonts.bold,
-		TextSize = 16,
-		TextWrapped = true,
-		BorderSizePixel = 0,
-		Size = UDim2.fromOffset(140, 40),
-	}
-	for k, v in pairs(defaults) do
-		if props[k] == nil then
-			props[k] = v
-		end
-	end
-	local b = UI.make("TextButton", props)
-	UI.corner(b, 10)
-	UI.make("UIStroke", { Color = Color3.new(0, 0, 0), Thickness = 1.5, Transparency = 0.6, ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual, Parent = b })
-	if onClick then
-		b.Activated:Connect(function()
-			if b:GetAttribute("Disabled") then
-				return
-			end
-			onClick(b)
-		end)
-	end
-	return b
-end
-
-function UI.setEnabled(button, enabled, color)
-	button:SetAttribute("Disabled", not enabled)
-	button.AutoButtonColor = enabled
-	if color then
-		button.BackgroundColor3 = enabled and color or UI.Theme.locked
-	end
-	button.TextTransparency = enabled and 0 or 0.35
-end
-
-function UI.scroll(props)
-	local defaults = {
-		BackgroundTransparency = 1,
-		BorderSizePixel = 0,
-		ScrollBarThickness = 6,
-		ScrollBarImageColor3 = UI.Theme.muted,
-		CanvasSize = UDim2.new(0, 0, 0, 0),
-		AutomaticCanvasSize = Enum.AutomaticSize.Y,
-		ScrollingDirection = Enum.ScrollingDirection.Y,
-	}
-	for k, v in pairs(defaults) do
-		if props[k] == nil then
-			props[k] = v
-		end
-	end
-	return UI.make("ScrollingFrame", props)
-end
-
-function UI.clear(container)
-	for _, c in ipairs(container:GetChildren()) do
-		if c:IsA("GuiObject") then
-			c:Destroy()
-		end
-	end
-end
-
-function UI.rarityColor(rarityId)
-	local r = GameConfig.Rarities[rarityId]
-	if not r then
-		return UI.Theme.muted
-	end
-	return Color3.fromRGB(r.color[1], r.color[2], r.color[3])
-end
-
-function UI.rgb(t)
-	return Color3.fromRGB(t[1], t[2], t[3])
-end
-
----------------------------------------------------------------------------
--- prévias 3D (ViewportFrame)
----------------------------------------------------------------------------
-
-local spinning = {} -- [viewport] = { model, speed, wobble, t }
-
-local function fitCamera(viewport, model, zoom)
-	local cam = viewport.CurrentCamera or Instance.new("Camera")
-	cam.FieldOfView = 30
-	cam.Parent = viewport
-	viewport.CurrentCamera = cam
-	local cf, size = model:GetBoundingBox()
-	local radius = size.Magnitude / 2
-	local dist = radius / math.tan(math.rad(cam.FieldOfView / 2)) * (zoom or 1.05)
-	cam.CFrame = CFrame.lookAt(cf.Position + Vector3.new(0, radius * 0.15, dist), cf.Position)
-	return cf.Position, radius
-end
-
-local function isShown(gui)
-	local g = gui
-	while g and g:IsA("GuiObject") do
-		if not g.Visible then
-			return false
-		end
-		g = g.Parent
-	end
-	return g ~= nil
-end
-
--- Mostra um modelo em um ViewportFrame. opts = { spin = bool, inspect = bool (animação especial), zoom }
-function UI.viewport(model, size, opts)
-	opts = opts or {}
-	local vp = UI.make("ViewportFrame", {
-		Size = size or UDim2.fromScale(1, 1),
-		BackgroundTransparency = 1,
-		Ambient = Color3.fromRGB(170, 170, 185),
-		LightColor = Color3.fromRGB(255, 250, 240),
-		LightDirection = Vector3.new(-1, -1.2, -1),
-	})
-	model:PivotTo(CFrame.new(0, 0, 0) * (opts.baseRotation or CFrame.Angles(0, 0, 0)))
-	model.Parent = vp
-	local center, radius = fitCamera(vp, model, opts.zoom)
-	if opts.interactive then
-		-- inspeção: arrastar gira a arma; roda do mouse/pinça ou botões aproximam e afastam
-		local state = { yaw = 0, pitch = 0, zoom = opts.zoom or 1.05, dragging = false, last = nil, auto = true }
-		local base = model:GetPivot()
-		local function apply()
-			model:PivotTo(base * CFrame.Angles(state.pitch, state.yaw, 0))
-			local cam = vp.CurrentCamera
-			local dist = radius / math.tan(math.rad(cam.FieldOfView / 2)) * state.zoom
-			cam.CFrame = CFrame.lookAt(center + Vector3.new(0, radius * 0.15 * state.zoom, dist), center)
-		end
-		vp.Active = true
-		vp.InputBegan:Connect(function(input)
-			local t = input.UserInputType
-			if t == Enum.UserInputType.MouseButton1 or t == Enum.UserInputType.Touch then
-				state.dragging = true
-				state.auto = false
-				state.last = input.Position
-			end
-		end)
-		vp.InputEnded:Connect(function(input)
-			local t = input.UserInputType
-			if t == Enum.UserInputType.MouseButton1 or t == Enum.UserInputType.Touch then
-				state.dragging = false
-			end
-		end)
-		vp.InputChanged:Connect(function(input)
-			local t = input.UserInputType
-			if state.dragging and (t == Enum.UserInputType.MouseMovement or t == Enum.UserInputType.Touch) and state.last then
-				local d = input.Position - state.last
-				state.last = input.Position
-				state.yaw = state.yaw + d.X * 0.012
-				state.pitch = math.clamp(state.pitch + d.Y * 0.008, -1.1, 1.1)
-				apply()
-			elseif t == Enum.UserInputType.MouseWheel then
-				state.zoom = math.clamp(state.zoom - input.Position.Z * 0.08, 0.45, 2.2)
-				apply()
-			end
-		end)
-		local controller = {
-			zoomBy = function(delta)
-				state.zoom = math.clamp(state.zoom + delta, 0.45, 2.2)
-				apply()
-			end,
-			reset = function()
-				state.yaw, state.pitch, state.zoom, state.auto = 0, 0, opts.zoom or 1.05, true
-				apply()
-			end,
-		}
-		-- giro automático até o jogador tocar
-		spinning[vp] = { model = model, speed = opts.inspect and 1.4 or 0.6, wobble = opts.inspect, t = 0, base = base, until_ = function()
-			return state.auto
-		end }
-		vp.Destroying:Connect(function()
-			spinning[vp] = nil
-		end)
-		return vp, controller
-	end
-	if opts.spin then
-		spinning[vp] = { model = model, speed = opts.inspect and 1.4 or 0.6, wobble = opts.inspect, t = 0, base = model:GetPivot() }
-		vp.Destroying:Connect(function()
-			spinning[vp] = nil
-		end)
-	end
-	return vp
-end
-
-function UI.creatureViewport(speciesId, mutationId, size, opts)
-	opts = opts or {}
-	opts.baseRotation = opts.baseRotation or CFrame.Angles(0, math.rad(180), 0)
-	local model = CreatureModel.build(speciesId, mutationId, { anchored = true })
-	return UI.viewport(model, size, opts)
-end
-
--- nome completo: "Dourada Gosminha" (mutação + espécie), com cores
-function UI.creatureName(speciesId, mutationId, rich)
-	local s = GameConfig.SpeciesById[speciesId]
-	local m = GameConfig.Mutations[mutationId]
-	if not s then
-		return "?"
-	end
-	if not rich then
-		return (mutationId ~= "normal" and (m.name .. " ") or "") .. s.name
-	end
-	local function hex(t)
-		return string.format("#%02X%02X%02X", t[1], t[2], t[3])
-	end
-	local out = ""
-	if mutationId ~= "normal" then
-		out = "<font color='" .. hex(m.color) .. "'>" .. m.name .. "</font> "
-	end
-	return out .. "<font color='" .. hex(GameConfig.Rarities[s.rarity].color) .. "'>" .. s.name .. "</font>"
-end
-
-RunService.RenderStepped:Connect(function(dt)
-	for vp, s in pairs(spinning) do
-		if s.until_ and not s.until_() then
-			-- inspeção manual: o jogador assumiu o controle
-		elseif vp.Parent and isShown(vp) then
-			s.t = s.t + dt
-			local rot = CFrame.Angles(0, s.t * s.speed, 0)
-			if s.wobble then
-				rot = rot * CFrame.Angles(math.sin(s.t * 2.2) * 0.25, 0, math.sin(s.t * 1.3) * 0.15)
-			end
-			s.model:PivotTo(s.base * rot)
-		elseif not vp.Parent then
-			spinning[vp] = nil
-		end
-	end
-end)
-
----------------------------------------------------------------------------
--- raiz, escala e camadas
----------------------------------------------------------------------------
-
--- Cada interface principal é uma ScreenGui própria (MainHUD, EggShop, Hatch, BaseManager,
--- IndexBook, Missions, Gifts, Ranking...), todas com a mesma escala
--- responsiva: o layout é feito em 1280×720 e uma UIScale ajusta para PC, tablet e celular.
-local screens = {} -- [nome] = { gui, root, scale }
-UI.layers = {}
-UI.scale = 1
-
-local function scaleValue()
-	local cam = workspace.CurrentCamera
-	local vs = cam and cam.ViewportSize or Vector2.new(1280, 720)
-	local s = math.min(vs.X / UI.DesignSize.X, vs.Y / UI.DesignSize.Y)
-	UI.isCompact = vs.X < 900 or vs.Y < 500
-	return math.clamp(s, 0.42, 1.35)
-end
-
-local function applyScale(entry, s)
-	entry.scale.Scale = s
-	entry.root.Size = UDim2.fromScale(1 / s, 1 / s)
-end
-
-local function updateScale()
-	local s = scaleValue()
-	UI.scale = s
-	for _, entry in pairs(screens) do
-		applyScale(entry, s)
-	end
-end
-
--- retorna a raiz (já escalada) da ScreenGui com esse nome, criando-a se necessário
-function UI.screen(name, displayOrder)
-	local entry = screens[name]
-	if entry then
-		return entry.root
-	end
-	local gui = UI.make("ScreenGui", {
-		Name = name,
-		ResetOnSpawn = false,
-		IgnoreGuiInset = false,
-		DisplayOrder = displayOrder or 10,
-		ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
-		Parent = player:WaitForChild("PlayerGui"),
-	})
-	local root = UI.make("Frame", { Name = "Root", BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Parent = gui })
-	local scale = UI.make("UIScale", { Parent = root })
-	entry = { gui = gui, root = root, scale = scale }
-	screens[name] = entry
-	applyScale(entry, UI.scale)
-	return root
-end
-
-function UI.init()
-	UI.scale = scaleValue()
-	UI.layers.HUD = UI.screen("MainHUD", 1)
-	UI.layers.Panels = UI.screen("Panels", 10)
-	UI.layers.Overlay = UI.screen("Hatch", 20)
-	UI.layers.Modal = UI.screen("Dialogs", 30)
-	UI.layers.Toast = UI.screen("Toasts", 40)
-	workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale)
-
-	-- indicador de carregamento enquanto há pedidos ao servidor
-	UI.loadingLabel = UI.text({
-		Name = "Loading",
-		Text = "⏳ Carregando...",
-		Font = UI.Fonts.bold,
-		TextSize = 14,
-		TextXAlignment = Enum.TextXAlignment.Center,
-		BackgroundTransparency = 0.15,
-		BackgroundColor3 = UI.Theme.panel,
-		AnchorPoint = Vector2.new(1, 1),
-		Position = UDim2.new(1, -14, 1, -100),
-		Size = UDim2.fromOffset(150, 30),
-		Visible = false,
-		Parent = UI.layers.Toast,
-	})
-	UI.corner(UI.loadingLabel, 8)
-end
-
-function UI.setLoading(on)
-	if UI.loadingLabel then
-		UI.loadingLabel.Visible = on
-	end
-end
-
----------------------------------------------------------------------------
--- painéis
----------------------------------------------------------------------------
-
-local panels = {} -- [name] = { build = fn, instance = table }
-UI.current = nil
-UI.panelListeners = {} -- funções chamadas com (nomeDoPainel ou nil) quando o painel aberto muda
-
-function UI.onPanelChanged(fn)
-	table.insert(UI.panelListeners, fn)
-end
-
-local function notifyPanel()
-	for _, fn in ipairs(UI.panelListeners) do
-		task.spawn(fn, UI.current)
-	end
-end
-
--- cria a moldura padrão de painel
-function UI.createPanel(title, width, height, guiName)
-	local frame = UI.frame({
-		Name = "Panel",
-		AnchorPoint = Vector2.new(0.5, 0.5),
-		Position = UDim2.fromScale(0.5, 0.5),
-		Size = UDim2.fromOffset(width or 820, height or 540),
-		BackgroundColor3 = UI.Theme.panel,
-		BackgroundTransparency = 0.08,
-		Visible = false,
-		Parent = guiName and UI.screen(guiName, 10) or UI.layers.Panels,
-	})
-	UI.corner(frame, 16)
-	UI.stroke(frame, UI.Theme.stroke, 2, 0.8)
-	local header = UI.frame({ Name = "Header", Size = UDim2.new(1, 0, 0, 52), BackgroundTransparency = 1, Parent = frame })
-	local titleLabel = UI.text({
-		Name = "Title",
-		Text = title,
-		Font = UI.Fonts.title,
-		TextSize = 26,
-		Size = UDim2.new(1, -120, 1, 0),
-		Position = UDim2.fromOffset(20, 0),
-		Parent = header,
-	})
-	UI.button({
-		Name = "Close",
-		Text = "✕",
-		TextSize = 20,
-		color = UI.Theme.bad,
-		Size = UDim2.fromOffset(40, 40),
-		AnchorPoint = Vector2.new(1, 0.5),
-		Position = UDim2.new(1, -10, 0.5, 0),
-		Parent = header,
-		onClick = function()
-			UI.close()
-		end,
-	})
-	local content = UI.frame({
-		Name = "Content",
-		BackgroundTransparency = 1,
-		Position = UDim2.fromOffset(16, 56),
-		Size = UDim2.new(1, -32, 1, -70),
-		Parent = frame,
-	})
-	return { frame = frame, content = content, title = titleLabel }
-end
-
--- registra um painel. build() -> { frame, refresh(view), onOpen(args), onClose() }
-function UI.register(name, build)
-	panels[name] = { build = build }
-end
-
-function UI.get(name)
-	local p = panels[name]
-	if not p then
-		return nil
-	end
-	if not p.instance then
-		p.instance = p.build()
-	end
-	return p.instance
-end
-
-function UI.open(name, args)
-	local inst = UI.get(name)
-	if not inst then
-		return
-	end
-	if UI.current and UI.current ~= name then
-		UI.close(true)
-	end
-	local wasOpen = UI.current == name
-	UI.current = name
-	inst.frame.Visible = true
-	local scale = inst.frame:FindFirstChild("PopScale") or UI.make("UIScale", { Name = "PopScale", Parent = inst.frame })
-	if not wasOpen then
-		scale.Scale = 0.92
-		TweenService:Create(scale, TweenInfo.new(0.16, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = 1 }):Play()
-	end
-	if inst.onOpen then
-		inst.onOpen(args)
-	end
-	if inst.refresh and UI.store and UI.store.view then
-		inst.refresh(UI.store.view)
-	end
-	if not wasOpen then
-		notifyPanel()
-	end
-end
-
--- fecha o painel aberto; com immediate = true não anima (troca direta entre painéis)
-function UI.close(immediate)
-	if not UI.current then
-		return
-	end
-	local name = UI.current
-	local inst = panels[name] and panels[name].instance
-	UI.current = nil
-	if inst then
-		if inst.onClose then
-			inst.onClose()
-		end
-		local scale = inst.frame:FindFirstChild("PopScale")
-		if immediate or not scale then
-			inst.frame.Visible = false
-		else
-			TweenService:Create(scale, TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.In), { Scale = 0.9 }):Play()
-			task.delay(0.1, function()
-				if UI.current ~= name then
-					inst.frame.Visible = false
-				end
-			end)
-		end
-	end
-	notifyPanel()
-end
-
-function UI.toggle(name, args)
-	if UI.current == name then
-		UI.close()
-	else
-		UI.open(name, args)
-	end
-end
-
-function UI.isOpen(name)
-	return UI.current == name
-end
-
--- atualiza o painel aberto quando chega uma nova fotografia
-function UI.refreshCurrent(view)
-	if not UI.current then
-		return
-	end
-	local inst = panels[UI.current].instance
-	if inst and inst.refresh then
-		inst.refresh(view)
-	end
-end
-
----------------------------------------------------------------------------
--- avisos e diálogos
----------------------------------------------------------------------------
-
-local toastList
-function UI.toast(message, kind)
-	if not toastList then
-		toastList = UI.frame({
-			BackgroundTransparency = 1,
-			AnchorPoint = Vector2.new(0.5, 0),
-			Position = UDim2.new(0.5, 0, 0, 70),
-			Size = UDim2.fromOffset(520, 300),
-			Parent = UI.layers.Toast,
-		})
-		UI.list(toastList, 6, false, Enum.HorizontalAlignment.Center)
-	end
-	local color = UI.Theme.panel2
-	if kind == "error" then
-		color = UI.Theme.bad
-	elseif kind == "good" then
-		color = UI.Theme.good
-	elseif kind == "rare" then
-		color = UI.Theme.purple
-	end
-	local t = UI.text({
-		Text = message,
-		TextXAlignment = Enum.TextXAlignment.Center,
-		Font = UI.Fonts.bold,
-		TextSize = 17,
-		AutomaticSize = Enum.AutomaticSize.Y,
-		Size = UDim2.fromOffset(500, 0),
-		BackgroundTransparency = 0.1,
-		BackgroundColor3 = color,
-		Parent = toastList,
-	})
-	UI.corner(t, 10)
-	UI.padding(t, 10)
-	task.delay(3.2, function()
-		TweenService:Create(t, TweenInfo.new(0.3), { TextTransparency = 1, BackgroundTransparency = 1 }):Play()
-		task.wait(0.32)
-		t:Destroy()
-	end)
-end
-
--- Resposta padrão de uma chamada ao servidor: mostra o erro (se houver) e retorna ok.
-function UI.handle(response, successMessage)
-	if response.ok then
-		if successMessage then
-			UI.toast(successMessage, "good")
-		end
-		return true
-	end
-	if response.error ~= "busy" then
-		UI.toast(response.message or "Não foi possível concluir.", "error")
-	end
-	return false
-end
-
--- opts = { title, message, confirmText, cancelText, danger, phrase (texto que precisa ser digitado), onConfirm }
-function UI.confirm(opts)
-	local shade = UI.make("TextButton", {
-		Text = "",
-		AutoButtonColor = false,
-		BackgroundColor3 = Color3.new(0, 0, 0),
-		BackgroundTransparency = 0.45,
-		Size = UDim2.fromScale(1, 1),
-		Parent = UI.layers.Modal,
-	})
-	local box = UI.frame({
-		AnchorPoint = Vector2.new(0.5, 0.5),
-		Position = UDim2.fromScale(0.5, 0.5),
-		Size = UDim2.fromOffset(500, 0),
-		AutomaticSize = Enum.AutomaticSize.Y,
-		BackgroundColor3 = UI.Theme.panel,
-		Parent = shade,
-	})
-	UI.corner(box, 14)
-	UI.stroke(box, opts.danger and UI.Theme.bad or UI.Theme.stroke, 2, opts.danger and 0.2 or 0.8)
-	UI.padding(box, 18)
-	UI.list(box, 12)
-	UI.text({ Text = opts.title or "Confirmar", Font = UI.Fonts.title, TextSize = 24, Size = UDim2.new(1, 0, 0, 30), LayoutOrder = 1, Parent = box })
-	UI.text({ Text = opts.message or "", TextSize = 16, AutomaticSize = Enum.AutomaticSize.Y, Size = UDim2.new(1, 0, 0, 0), TextColor3 = UI.Theme.muted, LayoutOrder = 2, Parent = box })
-	local input
-	if opts.phrase then
-		input = UI.make("TextBox", {
-			PlaceholderText = "Digite " .. opts.phrase,
-			Text = "",
-			ClearTextOnFocus = false,
-			Font = UI.Fonts.bold,
-			TextSize = 18,
-			TextColor3 = UI.Theme.text,
-			BackgroundColor3 = UI.Theme.panel2,
-			Size = UDim2.new(1, 0, 0, 40),
-			LayoutOrder = 3,
-			Parent = box,
-		})
-		UI.corner(input, 8)
-	end
-	local row = UI.frame({ BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 44), LayoutOrder = 4, Parent = box })
-	UI.list(row, 10, true, Enum.HorizontalAlignment.Right)
-	local function closeDialog()
+	local shade = UI.make("Frame", { Name = "Confirm", BackgroundColor3 = Color3.fromRGB(0, 0, 0), BackgroundTransparency = 0.45, Size = UDim2.new(1, 0, 1, 0), Parent = gui })
+	local box = UI.frame(shade, { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0), Size = UDim2.new(0, 420, 0, 200), BackgroundColor3 = UI.Theme.panel })
+	UI.stroke(box, UI.Theme.coins, 3)
+	UI.label(box, text, { Position = UDim2.new(0, 20, 0, 16), Size = UDim2.new(1, -40, 0, 100), TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Center, MaxText = 22 })
+	UI.button(box, "Cancelar", UI.Theme.grey, function()
 		shade:Destroy()
-	end
-	UI.button({
-		Text = opts.cancelText or "Cancelar",
-		color = UI.Theme.panel2,
-		Size = UDim2.fromOffset(150, 42),
-		Parent = row,
-		onClick = closeDialog,
-	})
-	local okBtn = UI.button({
-		Text = opts.confirmText or "Confirmar",
-		color = opts.danger and UI.Theme.bad or UI.Theme.good,
-		Size = UDim2.fromOffset(180, 42),
-		Parent = row,
-		onClick = function()
-			if opts.phrase and input.Text ~= opts.phrase then
-				UI.toast("Digite exatamente: " .. opts.phrase, "error")
-				return
-			end
-			closeDialog()
-			if opts.onConfirm then
-				task.spawn(opts.onConfirm, input and input.Text or nil)
-			end
-		end,
-	})
-	if opts.phrase then
-		UI.setEnabled(okBtn, false, opts.danger and UI.Theme.bad or UI.Theme.good)
-		input:GetPropertyChangedSignal("Text"):Connect(function()
-			UI.setEnabled(okBtn, input.Text == opts.phrase, opts.danger and UI.Theme.bad or UI.Theme.good)
-		end)
-	end
+	end, { Position = UDim2.new(0, 30, 1, -64), Size = UDim2.new(0, 160, 0, 48) })
+	UI.button(box, yesText or "Confirmar", UI.Theme.green, function()
+		shade:Destroy()
+		onYes()
+	end, { Position = UDim2.new(1, -190, 1, -64), Size = UDim2.new(0, 160, 0, 48) })
 	return shade
 end
 
--- resumo de recompensa em texto: { coins, potions = { id = n } }
-function UI.rewardText(coins, potions)
-	local parts = {}
-	if coins and coins > 0 then
-		table.insert(parts, "$" .. Format.short(coins))
+function UIController.init()
+	applyScale()
+	local camera = workspace.CurrentCamera
+	if camera then
+		camera:GetPropertyChangedSignal("ViewportSize"):Connect(applyScale)
 	end
-	for _, id in ipairs(GameConfig.PotionOrder) do
-		local n = potions and potions[id]
-		if n and n > 0 then
-			table.insert(parts, n .. "× " .. GameConfig.Potions[id].icon)
-		end
-	end
-	return table.concat(parts, " · ")
+	Store.changed:Connect(function()
+		UIController.refreshCurrent()
+	end)
 end
 
-return UI
+return UIController
